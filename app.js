@@ -14,7 +14,62 @@ const BESSEL_J0_ZERO = 2.4048; // fundamental mode of a circular membrane
 
 const RING_SIZE = 1 << 16;
 const FFT_SIZE = 1 << 15;
+const CHUNK = 128; // onset detection resolution (~3 ms)
 const STORE_KEY = 'baddy-tension-v1';
+
+/* ---------- Racket and string presets ---------- */
+
+// Manufacturers don't publish string-bed dimensions, so these are approximate
+// inner string-bed sizes. Calibration corrects any difference.
+const HEADS = {
+  isometric: { lengthMm: 220, widthMm: 190, label: 'isometric head' },
+  compact: { lengthMm: 214, widthMm: 184, label: 'compact head' },
+  oval: { lengthMm: 226, widthMm: 186, label: 'oval head' },
+};
+
+const RACKET_PRESETS = [
+  ['Yonex', 'isometric', [
+    'Astrox 100ZZ', 'Astrox 99 Pro', 'Astrox 88D Pro', 'Astrox 88S Pro', 'Astrox 77 Pro',
+    'Nanoflare 1000Z', 'Nanoflare 800 Pro', 'Nanoflare 700 Pro', 'Arcsaber 11 Pro', 'Arcsaber 7 Pro',
+    'Duora Z-Strike', 'Voltric 80', 'Nanoray 900', 'Nanoray Z-Speed',
+  ]],
+  ['Yonex', 'compact', ['Voltric Z-Force II']],
+  ['Victor', 'isometric', ['Thruster K Falcon', 'Thruster Ryuga', 'Auraspeed 90K', 'Jetspeed S 12']],
+  ['Li-Ning', 'isometric', ['Axforce 80', 'Aeronaut 9000', 'Halbertec 8000', 'Bladex 900']],
+].flatMap(([brand, head, models]) => models.map(model => ({
+  id: slug(brand + ' ' + model), brand, name: `${brand} ${model}`, head,
+})));
+
+// Gauge in mm; hybrids list mains then crosses.
+const STRING_PRESETS = [
+  ['Yonex', [
+    ['BG80', 0.68], ['BG80 Power', 0.68], ['BG65', 0.70], ['BG65 Ti', 0.70],
+    ['BG66 Ultimax', 0.65], ['BG66 Force', 0.65], ['Exbolt 63', 0.63], ['Exbolt 65', 0.65],
+    ['Exbolt 68', 0.68], ['Nanogy 95', 0.69], ['Nanogy 98', 0.66], ['Nanogy 99', 0.69],
+    ['Aerosonic', 0.61], ['Skyarc', 0.61], ['Aerobite (hybrid)', 0.67, 0.61],
+    ['Aerobite Boost (hybrid)', 0.72, 0.61],
+  ]],
+  ['Victor', [['VBS-63', 0.63], ['VBS-66 Nano', 0.66], ['VBS-68P', 0.68], ['VBS-70', 0.70]]],
+  ['Li-Ning', [['No.1', 0.65], ['No.7', 0.65]]],
+  ['Ashaway', [['Zymax 62 Fire', 0.62], ['Zymax 66 Fire', 0.66]]],
+].flatMap(([brand, items]) => items.map(([model, mains, crosses]) => ({
+  id: slug(brand + ' ' + model), brand, name: `${brand} ${model}`,
+  // Mass per metre averages across mains and crosses, so use the RMS gauge.
+  gaugeMm: crosses ? Math.sqrt((mains * mains + crosses * crosses) / 2) : mains,
+  gaugeLabel: crosses ? `${mains.toFixed(2)}/${crosses.toFixed(2)} mm` : `${mains.toFixed(2)} mm`,
+})));
+
+function slug(s) {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+}
+
+function racketPreset(id) {
+  return RACKET_PRESETS.find(p => p.id === id);
+}
+
+function stringPreset(id) {
+  return STRING_PRESETS.find(p => p.id === id);
+}
 
 /* ---------- State ---------- */
 
@@ -30,6 +85,7 @@ function today() {
 function newRacket(name) {
   return {
     id: uid(), name,
+    model: 'custom', string: 'yonex-bg80',
     lengthMm: 220, widthMm: 190, gaugeMm: 0.68,
     strungKg: 26 / LBS_PER_KG, strungDate: today(),
     alertPct: 10, cal: 1,
@@ -176,9 +232,10 @@ function median(values) {
 /* ---------- Microphone + tap detection ---------- */
 
 class TapListener {
-  constructor(onTap, onLevel) {
+  constructor(onTap, onLevel, onOnset) {
     this.onTap = onTap;
     this.onLevel = onLevel;
+    this.onOnset = onOnset || (() => {});
     this.running = false;
   }
 
@@ -197,21 +254,27 @@ class TapListener {
     this.analyser.smoothingTimeConstant = 0.5;
     source.connect(this.analyser);
 
-    this.proc = this.ctx.createScriptProcessor(1024, 1, 1);
+    this.proc = this.ctx.createScriptProcessor(512, 1, 1);
     source.connect(this.proc);
     const mute = this.ctx.createGain();
     mute.gain.value = 0;
     this.proc.connect(mute);
     mute.connect(this.ctx.destination);
 
-    this.ring = new Float32Array(RING_SIZE);
-    this.written = 0;
-    this.noise = 0.001;
-    this.pendingOnset = null;
-    this.lastOnset = -Infinity;
-    this.warmupUntil = this.sampleRate * 0.6;
+    this.reset(this.sampleRate);
     this.proc.onaudioprocess = e => this.process(e.inputBuffer.getChannelData(0));
     this.running = true;
+  }
+
+  reset(sampleRate) {
+    this.sampleRate = sampleRate;
+    this.ring = new Float32Array(RING_SIZE);
+    this.written = 0;
+    this.noise = 0.0005;
+    this.armed = true;
+    this.pendingOnset = null;
+    this.lastOnset = -Infinity;
+    this.warmupUntil = sampleRate * 0.25;
   }
 
   stop() {
@@ -222,19 +285,27 @@ class TapListener {
   }
 
   process(block) {
-    const start = this.written;
     let sum = 0;
-    for (let i = 0; i < block.length; i++) {
-      this.ring[(start + i) % RING_SIZE] = block[i];
-      sum += block[i] * block[i];
+    for (let i = 0; i < block.length; i++) sum += block[i] * block[i];
+    this.onLevel(Math.sqrt(sum / block.length));
+    for (let i = 0; i < block.length; i += CHUNK) this.processChunk(block.subarray(i, i + CHUNK));
+  }
+
+  // Work in ~3 ms chunks on peak level: a tap is a sharp spike that averaging
+  // over a whole block would smear into the background.
+  processChunk(chunk) {
+    const start = this.written;
+    let peak = 0;
+    for (let i = 0; i < chunk.length; i++) {
+      this.ring[(start + i) % RING_SIZE] = chunk[i];
+      const a = Math.abs(chunk[i]);
+      if (a > peak) peak = a;
     }
-    this.written += block.length;
-    const rms = Math.sqrt(sum / block.length);
-    this.onLevel(rms);
+    this.written += chunk.length;
 
     // Waiting for enough of the ring after a detected tap.
     const skip = Math.round(this.sampleRate * 0.004); // step past the impact click
-    const length = Math.round(this.sampleRate * 0.15);
+    const length = Math.round(this.sampleRate * 0.12);
     if (this.pendingOnset !== null) {
       if (this.written - this.pendingOnset >= skip + length) {
         const samples = new Float32Array(length);
@@ -249,20 +320,27 @@ class TapListener {
       return;
     }
 
-    // Sensitivity 10 triggers at 3x the noise floor, 1 at 30x.
-    const ratio = 3 * Math.pow(10, (10 - state.settings.sensitivity) / 9);
-    const threshold = Math.max(this.noise * ratio, 0.004);
-    const refractory = this.sampleRate * 0.35;
-    if (start > this.warmupUntil && rms > threshold && start - this.lastOnset > refractory) {
+    // Sensitivity 10 triggers at 2x the background peak level, 1 at 12x.
+    const ratio = 2 * Math.pow(6, (10 - state.settings.sensitivity) / 9);
+    const threshold = Math.max(this.noise * ratio, 0.002);
+    const sinceTap = start - this.lastOnset;
+
+    // Re-arm once the previous ring has died away, so its tail can't
+    // re-trigger but the next tap is caught as soon as it lands.
+    if (peak < threshold * 0.6) this.armed = true;
+
+    if (this.armed && peak > threshold && start > this.warmupUntil && sinceTap > this.sampleRate * 0.13) {
       let onset = start;
-      for (let i = 0; i < block.length; i++) {
-        if (Math.abs(block[i]) > threshold * 1.4) { onset = start + i; break; }
+      for (let i = 0; i < chunk.length; i++) {
+        if (Math.abs(chunk[i]) > threshold) { onset = start + i; break; }
       }
+      this.armed = false;
       this.pendingOnset = onset;
       this.lastOnset = onset;
-    } else if (start - this.lastOnset > refractory) {
+      this.onOnset();
+    } else if (sinceTap > this.sampleRate * 0.3) {
       // Track the room's background level so loud rooms don't false-trigger.
-      this.noise += (rms - this.noise) * (rms > this.noise ? 0.02 : 0.1);
+      this.noise += (peak - this.noise) * (peak > this.noise ? 0.01 : 0.05);
     }
   }
 }
@@ -510,9 +588,23 @@ function drawHistory() {
   }
 }
 
+function shortName(p) {
+  return p.name.slice(p.brand.length + 1);
+}
+
+function renderRacketInfo() {
+  const r = activeRacket();
+  const m = racketPreset(r.model);
+  const s = stringPreset(r.string);
+  const model = m ? m.name : `Custom ${r.lengthMm}×${r.widthMm} mm head`;
+  const string = s ? `${s.name} ${s.gaugeLabel}` : `${r.gaugeMm} mm string`;
+  $('racketInfo').textContent = `${model} · ${string}${r.cal !== 1 ? ' · calibrated' : ''}`;
+}
+
 function renderAll() {
   renderUnits();
   renderRacketSelect();
+  renderRacketInfo();
   renderTapDots();
   renderReading();
   drawSpectrum();
@@ -521,28 +613,38 @@ function renderAll() {
 
 /* ---------- Taps ---------- */
 
+function flashTap() {
+  const card = els.tension.closest('.reading');
+  card.classList.remove('hit');
+  void card.offsetWidth; // restart the animation
+  card.classList.add('hit');
+}
+
+// Every tap updates the reading straight away; the median of the set
+// settles it, then the next tap starts a fresh set.
 function handleTap({ freq, snrDb }) {
-  if (snrDb < 12) {
-    setStatus('That tap was too faint or noisy. Try a sharper flick, closer to the mic.');
+  if (snrDb < 8) {
+    setStatus('Heard a tap but no clear ring. Flick the centre of the strings, not the frame.');
     return;
   }
+  const need = state.settings.taps;
+  if (tapFreqs.length >= need) tapFreqs = [];
   tapFreqs.push(freq);
   els.peak.textContent = `last tap ${Math.round(freq)} Hz`;
-  const need = state.settings.taps;
-  if (tapFreqs.length < need) {
-    setStatus(`Got it (${Math.round(freq)} Hz). ${need - tapFreqs.length} more tap${need - tapFreqs.length === 1 ? '' : 's'}…`);
-    renderTapDots();
-    return;
-  }
   lastFreq = median(tapFreqs);
-  const spread = (Math.max(...tapFreqs) - Math.min(...tapFreqs)) / lastFreq;
-  tapFreqs = [];
   renderTapDots();
   renderReading();
   if (!listener || !listener.running) drawSpectrum();
+
+  if (tapFreqs.length < need) {
+    const left = need - tapFreqs.length;
+    setStatus(`Tap ${tapFreqs.length} heard. ${left} more to confirm…`);
+    return;
+  }
+  const spread = (Math.max(...tapFreqs) - Math.min(...tapFreqs)) / lastFreq;
   setStatus(spread > 0.06
     ? 'Taps were inconsistent, so this reading may be off. Keep tapping the centre to measure again.'
-    : 'Reading ready. Save it, or keep tapping to measure again.');
+    : 'Reading confirmed. Save it, or tap again to start a new measurement.');
 }
 
 async function toggleListening() {
@@ -563,7 +665,7 @@ async function toggleListening() {
   renderTapDots();
   listener = new TapListener(handleTap, rms => {
     els.level.style.width = Math.min(100, Math.sqrt(rms) * 250) + '%';
-  });
+  }, flashTap);
   try {
     await listener.start();
   } catch (e) {
@@ -584,12 +686,72 @@ const racketDialog = $('racketDialog');
 const racketForm = $('racketForm');
 let editingId = null;
 
+function fillPresetSelect(select, presets, label) {
+  select.innerHTML = '';
+  const groups = {};
+  for (const p of presets) {
+    if (!groups[p.brand]) {
+      groups[p.brand] = document.createElement('optgroup');
+      groups[p.brand].label = p.brand;
+      select.appendChild(groups[p.brand]);
+    }
+    const o = document.createElement('option');
+    o.value = p.id;
+    o.textContent = label(p);
+    groups[p.brand].appendChild(o);
+  }
+  const other = document.createElement('option');
+  other.value = 'custom';
+  other.textContent = 'Other / not listed';
+  select.appendChild(other);
+}
+
+fillPresetSelect(racketForm.elements.model, RACKET_PRESETS, shortName);
+fillPresetSelect(racketForm.elements.string, STRING_PRESETS, p => `${shortName(p)} (${p.gaugeLabel})`);
+
+racketForm.elements.model.addEventListener('change', () => {
+  const f = racketForm.elements;
+  const p = racketPreset(f.model.value);
+  if (!p) {
+    $('sizeDetails').open = true;
+    return;
+  }
+  f.lengthMm.value = HEADS[p.head].lengthMm;
+  f.widthMm.value = HEADS[p.head].widthMm;
+  if (f.name.dataset.auto === 'true' || !f.name.value.trim()) {
+    f.name.value = shortName(p);
+    f.name.dataset.auto = 'true';
+  }
+});
+
+racketForm.elements.string.addEventListener('change', () => {
+  const f = racketForm.elements;
+  const p = stringPreset(f.string.value);
+  if (p) f.gaugeMm.value = +p.gaugeMm.toFixed(3);
+  else $('sizeDetails').open = true;
+});
+
+racketForm.elements.gaugeMm.addEventListener('input', () => {
+  const f = racketForm.elements;
+  const p = stringPreset(f.string.value);
+  if (p && Math.abs(+f.gaugeMm.value - p.gaugeMm) > 0.001) f.string.value = 'custom';
+});
+
+racketForm.elements.name.addEventListener('input', () => {
+  racketForm.elements.name.dataset.auto = 'false';
+});
+
 function openRacketDialog(r, isNew) {
   editingId = isNew ? null : r.id;
   $('racketDialogTitle').textContent = isNew ? 'New racket' : 'Edit racket';
   $('deleteRacket').hidden = isNew || state.rackets.length < 2;
   const f = racketForm.elements;
+  const model = racketPreset(r.model);
+  f.model.value = model ? model.id : 'custom';
+  f.string.value = stringPreset(r.string) ? r.string : 'custom';
+  $('sizeDetails').open = !model;
   f.name.value = r.name;
+  f.name.dataset.auto = String(isNew || r.name === 'My racket' || (model && r.name === shortName(model)));
   f.lengthMm.value = r.lengthMm;
   f.widthMm.value = r.widthMm;
   f.gaugeMm.value = r.gaugeMm;
@@ -613,6 +775,8 @@ racketDialog.addEventListener('close', () => {
   }
   const geometryChanged = r.lengthMm !== +f.lengthMm.value || r.widthMm !== +f.widthMm.value || r.gaugeMm !== +f.gaugeMm.value;
   r.name = f.name.value.trim() || 'Racket';
+  r.model = f.model.value;
+  r.string = f.string.value;
   r.lengthMm = +f.lengthMm.value;
   r.widthMm = +f.widthMm.value;
   r.gaugeMm = +f.gaugeMm.value;

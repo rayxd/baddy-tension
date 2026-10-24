@@ -125,8 +125,19 @@ input[type="range"] { width: 100%; accent-color: var(--accent); min-height: 44px
 .seg button { border: 0; border-radius: 0; background: transparent; min-height: 36px; padding: 6px 12px; }
 .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
 
-.racket-bar { display: flex; gap: 8px; align-items: center; padding: 10px; }
+.racket-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px; }
 .racket-bar select { flex: 1; min-width: 0; }
+.racket-info { flex-basis: 100%; margin: 0 4px; }
+.racket-info:empty { display: none; }
+
+.reading.hit { animation: hit 0.35s ease-out; }
+@keyframes hit {
+  0% { box-shadow: 0 0 0 0 var(--accent); }
+  100% { box-shadow: 0 0 0 10px transparent; }
+}
+
+details.sizes { margin: 4px 0 8px; }
+details.sizes > summary { font-size: 0.9rem; color: var(--muted); }
 
 .reading { text-align: center; display: grid; gap: 10px; }
 .big { font-size: 4.2rem; font-weight: 700; line-height: 1; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; margin-top: 4px; }

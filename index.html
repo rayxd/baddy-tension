@@ -28,6 +28,7 @@
     <select id="racketSelect"></select>
     <button type="button" id="editRacket" class="ghost">Edit</button>
     <button type="button" id="addRacket" class="ghost">+ New</button>
+    <p id="racketInfo" class="racket-info muted small"></p>
   </section>
 
   <section class="card reading">
@@ -84,6 +85,7 @@
         <li>Tap the <b>centre</b> of the strings. A fingernail flick or the butt of another racket works well.</li>
         <li>Measure somewhere quiet, with the phone 5–20 cm from the strings.</li>
         <li>Press <b>Calibrate…</b> right after a fresh restring, entering the tension it was strung at. This corrects for your racket's frame and string, and makes later readings far more accurate.</li>
+        <li>Pick your racket and string under <b>Edit</b>. The string gauge matters most: tension scales with gauge squared.</li>
         <li>Expect about 5–10% loss in the first day after stringing. That's normal.</li>
         <li>Using the same racket over time, the trend is more reliable than any single number.</li>
       </ul>
@@ -94,16 +96,23 @@
 <dialog id="racketDialog">
   <form method="dialog" id="racketForm">
     <h2 id="racketDialogTitle">Racket</h2>
-    <label>Name<input name="name" required maxlength="40"></label>
+    <label>Racket model<select name="model"></select></label>
+    <label>String<select name="string"></select></label>
+    <label>Nickname<input name="name" required maxlength="40"></label>
     <div class="grid">
-      <label>String bed length (mm)<input name="lengthMm" type="number" min="150" max="300" step="1" required></label>
-      <label>String bed width (mm)<input name="widthMm" type="number" min="130" max="260" step="1" required></label>
-      <label>String gauge (mm)<input name="gaugeMm" type="number" min="0.5" max="0.9" step="0.01" required></label>
-      <label>Strung at (<span class="unitName">lbs</span>)<input name="strung" type="number" min="5" max="40" step="0.1" required></label>
+      <label><span>Strung at (<span class="unitName">lbs</span>)</span><input name="strung" type="number" min="5" max="40" step="0.1" required></label>
       <label>Date strung<input name="strungDate" type="date"></label>
       <label>Restring alert at loss (%)<input name="alertPct" type="number" min="1" max="50" step="1" required></label>
     </div>
-    <p class="muted small">Measure the inside of the string bed from the top of the head to the throat (length) and side to side (width). Typical badminton: 220 × 190 mm. Common gauges: BG65 0.70, BG80 0.68, Exbolt 63 0.63.</p>
+    <details class="sizes" id="sizeDetails">
+      <summary>Head size &amp; string gauge</summary>
+      <div class="grid">
+        <label>String bed length (mm)<input name="lengthMm" type="number" min="150" max="300" step="1" required></label>
+        <label>String bed width (mm)<input name="widthMm" type="number" min="130" max="260" step="1" required></label>
+        <label>String gauge (mm)<input name="gaugeMm" type="number" min="0.5" max="0.9" step="any" required></label>
+      </div>
+      <p class="muted small">These are filled in from your racket and string choice. Head sizes are approximate, because makers don't publish string-bed dimensions. For a racket that isn't listed, measure the inside of the strung area from top to throat (length) and side to side (width).</p>
+    </details>
     <p class="muted small" id="calInfo"></p>
     <div class="row">
       <button value="cancel" formnovalidate class="ghost">Cancel</button>
@@ -117,7 +126,7 @@
   <form method="dialog" id="calForm">
     <h2>Calibrate this racket</h2>
     <p class="small">Use this right after a restring, or when you know the racket's real tension. The last reading (<b id="calFreq">--</b>) will be matched to:</p>
-    <label>Known tension (<span class="unitName">lbs</span>)<input name="known" type="number" min="5" max="40" step="0.1" required></label>
+    <label><span>Known tension (<span class="unitName">lbs</span>)</span><input name="known" type="number" min="5" max="40" step="0.1" required></label>
     <label class="check"><input type="checkbox" name="resetDate" checked> Also mark as freshly strung today</label>
     <div class="row">
       <button value="cancel" formnovalidate class="ghost">Cancel</button>

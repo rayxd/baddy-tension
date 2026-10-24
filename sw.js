@@ -1,5 +1,5 @@
 // Network first so updates show up straight away; cached copy when offline at the court.
-const CACHE = 'baddy-tension-v1';
+const CACHE = 'baddy-tension-v2';
 const SHELL = ['./', 'index.html', 'app.js', 'style.css', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
