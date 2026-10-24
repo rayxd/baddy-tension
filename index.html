@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Baddy Tension</title>
+<meta name="description" content="Measure badminton string tension from the sound of a tap.">
+<meta name="theme-color" content="#0e1621">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Baddy Tension">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <h1><span class="shuttle">🏸</span> Baddy Tension</h1>
+  <div class="seg" role="group" aria-label="Units">
+    <button type="button" data-unit="lbs">lbs</button>
+    <button type="button" data-unit="kg">kg</button>
+  </div>
+</header>
+
+<main>
+  <section class="card racket-bar">
+    <label for="racketSelect" class="sr-only">Racket</label>
+    <select id="racketSelect"></select>
+    <button type="button" id="editRacket" class="ghost">Edit</button>
+    <button type="button" id="addRacket" class="ghost">+ New</button>
+  </section>
+
+  <section class="card reading">
+    <div id="alert" class="alert" hidden></div>
+    <div class="big"><span id="tensionValue">--</span><span id="tensionUnit" class="unit">lbs</span></div>
+    <div class="sub"><span id="freqValue">-- Hz</span><span class="dot">·</span><span id="lossValue">--</span></div>
+    <div class="taps" id="tapDots" aria-hidden="true"></div>
+    <p id="status" class="status">Press <b>Start listening</b>, hold the phone near the racket, then flick the centre of the strings with a fingernail.</p>
+    <button type="button" id="listenBtn" class="primary">Start listening</button>
+    <div class="row">
+      <button type="button" id="saveBtn" disabled>Save reading</button>
+      <button type="button" id="calibrateBtn" class="ghost" disabled>Calibrate…</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Sound spectrum</h2>
+      <span id="peakLabel" class="muted"></span>
+    </div>
+    <canvas id="spectrum"></canvas>
+    <div class="meter" title="Microphone level"><div id="level"></div></div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>History</h2>
+      <span id="historyNote" class="muted"></span>
+    </div>
+    <canvas id="historyChart"></canvas>
+    <ul id="historyList" class="history"></ul>
+  </section>
+
+  <details class="card">
+    <summary>Settings &amp; backup</summary>
+    <div class="grid">
+      <label>Lowest pitch (Hz)<input id="setFmin" type="number" min="100" max="3000" step="10"></label>
+      <label>Highest pitch (Hz)<input id="setFmax" type="number" min="200" max="5000" step="10"></label>
+      <label>Tap sensitivity (1–10)<input id="setSens" type="range" min="1" max="10" step="1"></label>
+      <label>Taps per reading<input id="setTaps" type="number" min="1" max="7" step="1"></label>
+    </div>
+    <div class="row">
+      <button type="button" id="exportBtn" class="ghost">Export backup</button>
+      <button type="button" id="importBtn" class="ghost">Import backup</button>
+      <input id="importFile" type="file" accept="application/json" hidden>
+    </div>
+  </details>
+
+  <details class="card">
+    <summary>How it works &amp; tips</summary>
+    <div class="prose">
+      <p>The tight string bed rings like a drum skin. Its pitch goes up with the square root of tension, so the app measures the pitch of your tap and works backwards using the racket's head size and string gauge.</p>
+      <ul>
+        <li>Tap the <b>centre</b> of the strings. A fingernail flick or the butt of another racket works well.</li>
+        <li>Measure somewhere quiet, with the phone 5–20 cm from the strings.</li>
+        <li>Press <b>Calibrate…</b> right after a fresh restring, entering the tension it was strung at. This corrects for your racket's frame and string, and makes later readings far more accurate.</li>
+        <li>Expect about 5–10% loss in the first day after stringing. That's normal.</li>
+        <li>Using the same racket over time, the trend is more reliable than any single number.</li>
+      </ul>
+    </div>
+  </details>
+</main>
+
+<dialog id="racketDialog">
+  <form method="dialog" id="racketForm">
+    <h2 id="racketDialogTitle">Racket</h2>
+    <label>Name<input name="name" required maxlength="40"></label>
+    <div class="grid">
+      <label>String bed length (mm)<input name="lengthMm" type="number" min="150" max="300" step="1" required></label>
+      <label>String bed width (mm)<input name="widthMm" type="number" min="130" max="260" step="1" required></label>
+      <label>String gauge (mm)<input name="gaugeMm" type="number" min="0.5" max="0.9" step="0.01" required></label>
+      <label>Strung at (<span class="unitName">lbs</span>)<input name="strung" type="number" min="5" max="40" step="0.1" required></label>
+      <label>Date strung<input name="strungDate" type="date"></label>
+      <label>Restring alert at loss (%)<input name="alertPct" type="number" min="1" max="50" step="1" required></label>
+    </div>
+    <p class="muted small">Measure the inside of the string bed from the top of the head to the throat (length) and side to side (width). Typical badminton: 220 × 190 mm. Common gauges: BG65 0.70, BG80 0.68, Exbolt 63 0.63.</p>
+    <p class="muted small" id="calInfo"></p>
+    <div class="row">
+      <button value="cancel" formnovalidate class="ghost">Cancel</button>
+      <button type="button" id="deleteRacket" class="danger ghost">Delete</button>
+      <button value="save" class="primary" id="saveRacket">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="calDialog">
+  <form method="dialog" id="calForm">
+    <h2>Calibrate this racket</h2>
+    <p class="small">Use this right after a restring, or when you know the racket's real tension. The last reading (<b id="calFreq">--</b>) will be matched to:</p>
+    <label>Known tension (<span class="unitName">lbs</span>)<input name="known" type="number" min="5" max="40" step="0.1" required></label>
+    <label class="check"><input type="checkbox" name="resetDate" checked> Also mark as freshly strung today</label>
+    <div class="row">
+      <button value="cancel" formnovalidate class="ghost">Cancel</button>
+      <button type="button" id="resetCal" class="ghost">Reset calibration</button>
+      <button value="save" class="primary">Calibrate</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="app.js"></script>
+</body>
+</html>
