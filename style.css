@@ -246,6 +246,16 @@ select, input[type="number"], input[type="date"], input:not([type]) {
   border-radius: 12px; padding: 9px 10px; min-height: 44px;
 }
 input[type="range"] { width: 100%; accent-color: var(--accent); min-height: 44px; }
+fieldset.look { border: 1px solid var(--line); border-radius: 16px; padding: 10px 12px 12px; margin: 4px 0 10px; display: grid; gap: 10px; min-width: 0; }
+fieldset.look legend { font: 600 1.05rem var(--font-display); padding: 0 6px; color: var(--text); }
+fieldset.look p { margin: 0; }
+.look-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 10px; }
+input[type="color"] {
+  width: 100%; min-height: 44px; padding: 4px; border: 1px solid var(--line); border-radius: 12px; background: var(--raised); cursor: pointer;
+}
+input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+input[type="color"]::-webkit-color-swatch { border: 0; border-radius: 8px; }
+.swatch { display: inline-block; width: 14px; height: 14px; border-radius: 50%; margin-right: 8px; vertical-align: 1px; border: 1px solid rgba(255, 255, 255, 0.25); }
 details.sizes { margin: 4px 0 8px; }
 details.sizes > summary { font-size: 0.9rem; color: var(--muted); cursor: pointer; }
 details.sizes[open] > summary { margin-bottom: 10px; }

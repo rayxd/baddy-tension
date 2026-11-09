@@ -14,7 +14,7 @@
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon-192.png">
 <link rel="preload" href="vendor/fonts/saira-condensed-latin-700-normal.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="style.css?v=6">
+<link rel="stylesheet" href="style.css?v=7">
 </head>
 <body>
 
@@ -158,6 +158,21 @@
       </div>
       <p class="muted small">These are filled in from your racket and string choice. Head sizes are approximate, because makers don't publish string-bed dimensions. For a racket that isn't listed, measure the inside of the strung area from top to throat (length) and side to side (width).</p>
     </details>
+    <fieldset class="look">
+      <legend>Look</legend>
+      <label>Colours<select name="lookColourway"></select></label>
+      <div class="look-grid">
+        <label>Frame<input name="lookFrame" type="color"></label>
+        <label>Accent<input name="lookAccent" type="color"></label>
+        <label>Grip<input name="lookGrip" type="color"></label>
+        <label>Finish<select name="lookFinish">
+          <option value="gloss">Gloss</option><option value="matte">Matte</option>
+          <option value="metallic">Metallic</option><option value="pearl">Pearl</option>
+        </select></label>
+        <label>Strings<select name="lookStrings"></select></label>
+      </div>
+      <p class="muted small">Stock colours are close to the maker's colourway. Logos and printed graphics aren't shown. Change any colour to match your own racket.</p>
+    </fieldset>
     <p class="muted small" id="calInfo"></p>
     <div class="row">
       <button value="cancel" formnovalidate class="btn">Cancel</button>
@@ -181,7 +196,7 @@
   </form>
 </dialog>
 
-<script src="app.js?v=6"></script>
-<script type="module" src="scene3d.js?v=6"></script>
+<script src="app.js?v=7"></script>
+<script type="module" src="scene3d.js?v=7"></script>
 </body>
 </html>

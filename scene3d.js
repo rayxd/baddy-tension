@@ -56,20 +56,38 @@ function createScene(stage, canvas, still) {
   /* ----- Racket ----- */
   const racket = new THREE.Group();
   scene.add(racket);
+  // Colours and finish come from the racket's look (setLook); these are defaults.
   const frameMat = new THREE.MeshStandardMaterial({ color: 0x223244, metalness: 0.55, roughness: 0.32 });
-  const pts = [];
-  for (let i = 0; i < 96; i++) {
-    const a = (i / 96) * Math.PI * 2;
-    const c = Math.cos(a), s = Math.sin(a);
-    const k = 1 + 0.05 * Math.pow(Math.sin(2 * a), 2); // squarer shoulders, like an isometric head
-    pts.push(new THREE.Vector3((A + 0.06) * c * k, CY + (B + 0.06) * s * (s > 0 ? k : 1), 0));
+  const accentMat = new THREE.MeshStandardMaterial({ color: COLORS.accent, metalness: 0.4, roughness: 0.35 });
+  const shaftMat = new THREE.MeshStandardMaterial({ color: 0x8b9bb0, metalness: 0.7, roughness: 0.25 });
+  const gripMat = new THREE.MeshStandardMaterial({ color: 0x1c2a39, roughness: 0.85 });
+
+  // The head frame plus a thin accent stripe along its face. Head shapes:
+  // isometric has squarer shoulders, oval is a plain ellipse, compact is smaller.
+  const HEAD_SHAPES = { isometric: { square: 0.05, scale: 1 }, oval: { square: 0, scale: 1 }, compact: { square: 0.04, scale: 0.95 } };
+  let headMeshes = [];
+  let headShape = '';
+  function buildHead(shape) {
+    if (shape === headShape) return;
+    headShape = shape;
+    const cfg = HEAD_SHAPES[shape] || HEAD_SHAPES.isometric;
+    headMeshes.forEach(m => { racket.remove(m); m.geometry.dispose(); });
+    const pts = [];
+    for (let i = 0; i < 96; i++) {
+      const a = (i / 96) * Math.PI * 2;
+      const c = Math.cos(a), s = Math.sin(a);
+      const k = 1 + cfg.square * Math.pow(Math.sin(2 * a), 2);
+      pts.push(new THREE.Vector3((A + 0.06) * c * k, CY + (B + 0.06) * s * (s > 0 ? k : 1), 0));
+    }
+    const curve = new THREE.CatmullRomCurve3(pts, true);
+    const frame = new THREE.Mesh(new THREE.TubeGeometry(curve, 220, 0.052, 12, true), frameMat);
+    const stripe = new THREE.Mesh(new THREE.TubeGeometry(curve, 220, 0.016, 6, true), accentMat);
+    stripe.position.z = 0.045;
+    headMeshes = [frame, stripe];
+    headMeshes.forEach(m => racket.add(m));
+    racket.scale.setScalar(cfg.scale);
   }
-  const headCurve = new THREE.CatmullRomCurve3(pts, true);
-  racket.add(new THREE.Mesh(new THREE.TubeGeometry(headCurve, 220, 0.052, 12, true), frameMat));
-  const accentRing = new THREE.Mesh(new THREE.TubeGeometry(headCurve, 220, 0.012, 6, true),
-    new THREE.MeshBasicMaterial({ color: COLORS.accent, transparent: true, opacity: 0.55 }));
-  accentRing.position.z = 0.05;
-  racket.add(accentRing);
+  buildHead('isometric');
 
   const cyl = (r0, r1, y0, y1, mat) => {
     const m = new THREE.Mesh(new THREE.CylinderGeometry(r0, r1, y1 - y0, 20), mat);
@@ -78,9 +96,9 @@ function createScene(stage, canvas, still) {
   };
   const throatY = CY - B - 0.06;
   cyl(0.05, 0.075, throatY - 0.12, throatY + 0.02, frameMat);
-  cyl(0.032, 0.032, -2.05, throatY - 0.1, new THREE.MeshStandardMaterial({ color: 0x8b9bb0, metalness: 0.7, roughness: 0.25 }));
-  cyl(0.088, 0.08, -3.2, -2.05, new THREE.MeshStandardMaterial({ color: 0x1c2a39, roughness: 0.8 }));
-  cyl(0.094, 0.094, -2.16, -2.05, new THREE.MeshStandardMaterial({ color: COLORS.amber, roughness: 0.5 }));
+  cyl(0.032, 0.032, -2.05, throatY - 0.1, shaftMat);
+  cyl(0.088, 0.08, -3.2, -2.05, gripMat);
+  cyl(0.094, 0.094, -2.16, -2.05, accentMat);
 
   // Faint glow across the string bed that brightens while it rings.
   const bedShape = new THREE.Shape();
@@ -94,6 +112,7 @@ function createScene(stage, canvas, still) {
   const NP = 30;
   const strings = [];
   const stringMat = new THREE.LineBasicMaterial({ color: COLORS.chalk, transparent: true, opacity: 0.9 });
+  const stringBase = new THREE.Color(COLORS.chalk); // the string's own colour, dimmed for the dark stage
   const addString = (horizontal, c) => {
     const half = horizontal
       ? A * Math.sqrt(Math.max(0, 1 - ((c - CY) / B) ** 2))
@@ -225,14 +244,13 @@ function createScene(stage, canvas, still) {
       s.g.attributes.position.needsUpdate = true;
     }
 
-    col.setHex(COLORS.chalk).lerp(tmp.setHex(COLORS.accent).multiplyScalar(0.7), listen * 0.8);
+    col.copy(stringBase).lerp(tmp.setHex(COLORS.accent).multiplyScalar(0.8), listen * 0.45);
     col.lerp(tmp.setHex(COLORS.mint), Math.min(1, energy));
     col.lerp(tmp.setHex(COLORS.amber), Math.min(1, overEnergy * 1.4));
     col.lerp(tmp.setHex(finalColour), lock);
     stringMat.color.copy(col);
     bed.material.color.copy(col);
     bed.material.opacity = 0.03 + 0.12 * Math.min(1, energy + overEnergy) + 0.06 * lock;
-    accentRing.material.color.setHex(warn && lock > 0.5 ? COLORS.amber : COLORS.accent);
     rim.color.setHex(warn && lock > 0.5 ? COLORS.amber : COLORS.accent);
 
     // Ripples: one per recent tap.
@@ -331,6 +349,23 @@ function createScene(stage, canvas, still) {
     // 'ok', 'warn', or null while a new measurement is under way.
     setResult(kind) { if (kind !== result) { result = kind; wake(); } },
     reset() { taps = []; result = null; wake(); },
+    // The racket's look: { head, frame, accent, shaft, grip, strings, finish }.
+    setLook(look) {
+      buildHead(look.head || 'isometric');
+      const FINISH = { gloss: [0.28, 0.35], matte: [0.75, 0.1], metallic: [0.3, 0.85], pearl: [0.38, 0.5] };
+      const [rough, metal] = FINISH[look.finish] || FINISH.gloss;
+      frameMat.color.set(look.frame);
+      frameMat.roughness = rough;
+      frameMat.metalness = metal;
+      accentMat.color.set(look.accent);
+      accentMat.roughness = rough;
+      accentMat.metalness = metal;
+      shaftMat.color.set(look.shaft || '#8b9bb0');
+      gripMat.color.set(look.grip);
+      // Strings read best a little dimmer than their real colour on the dark stage.
+      stringBase.set(look.strings).lerp(new THREE.Color(0x101b27), 0.35);
+      wake();
+    },
   };
 }
 
