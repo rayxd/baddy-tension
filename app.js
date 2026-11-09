@@ -76,6 +76,67 @@ const STRING_PRESETS = [
   gaugeLabel: crosses ? `${mains.toFixed(2)}/${crosses.toFixed(2)} mm` : `${mains.toFixed(2)} mm`,
 })));
 
+// Each model's stock colourway as plain colours: frame, accent stripe, grip and
+// finish. These approximate the colours only; brand logos and graphics aren't
+// drawn. 'approx' marks colourways no retailer listing confirmed.
+const COLOURWAYS = {
+  'yonex-astrox-100zz': { name: 'Dark Navy', frame: '#1a2440', accent: '#c9a24a', finish: 'gloss' },
+  'yonex-astrox-99-pro': { name: 'White Tiger', frame: '#e9e6df', accent: '#e2502b', finish: 'pearl' },
+  'yonex-astrox-88d-pro': { name: 'Black/Silver', frame: '#17191d', accent: '#b9bec6', finish: 'metallic' },
+  'yonex-astrox-88s-pro': { name: 'Silver/Black', frame: '#b9bec6', accent: '#17191d', finish: 'metallic' },
+  'yonex-astrox-77-pro': { name: 'High Orange', frame: '#f26a1b', accent: '#1b1b1f', finish: 'gloss' },
+  'yonex-nanoflare-1000z': { name: 'Lightning Yellow', frame: '#e9e12a', accent: '#1b1b1f', finish: 'gloss' },
+  'yonex-nanoflare-800-pro': { name: 'Deep Green', frame: '#0f4a3a', accent: '#c9d3cf', finish: 'gloss' },
+  'yonex-nanoflare-700-pro': { name: 'Midnight Purple', frame: '#33215a', accent: '#b9a6e0', finish: 'gloss' },
+  'yonex-arcsaber-11-pro': { name: 'Grayish Pearl', frame: '#a7aaa9', accent: '#c8312f', finish: 'pearl' },
+  'yonex-arcsaber-7-pro': { name: 'Gray/Yellow', frame: '#6c7074', accent: '#e6d43a', finish: 'matte' },
+  'yonex-duora-z-strike': { name: 'Black/White', frame: '#16181c', accent: '#f0f0f0', finish: 'gloss' },
+  'yonex-voltric-80': { name: 'Black/Red', frame: '#17181c', accent: '#b3202a', finish: 'gloss', approx: true },
+  'yonex-nanoray-900': { name: 'White/High Red', frame: '#ecebe8', accent: '#e3262e', finish: 'gloss' },
+  'yonex-nanoray-z-speed': { name: 'Lime/Navy', frame: '#c8de2a', accent: '#1f2d55', finish: 'gloss', approx: true },
+  'yonex-voltric-z-force-ii': { name: 'Black/Lime', frame: '#141518', accent: '#9be22d', finish: 'gloss' },
+  'victor-thruster-k-falcon': { name: 'Claret/Black', frame: '#6e1424', accent: '#141414', finish: 'gloss', approx: true },
+  'victor-thruster-ryuga': { name: 'Flame Red', frame: '#b51f1f', accent: '#f08a24', finish: 'gloss' },
+  'victor-auraspeed-90k': { name: 'Midnight Blue', frame: '#1b2a55', accent: '#8fb4ff', finish: 'metallic' },
+  'victor-jetspeed-s-12': { name: 'Light Dahlia/Purple', frame: '#f07a6a', accent: '#5b3a8c', finish: 'gloss' },
+  'li-ning-axforce-80': { name: 'Black/Gold', frame: '#141414', accent: '#c9a24a', finish: 'gloss' },
+  'li-ning-aeronaut-9000': { name: 'White/Gold', frame: '#ecebe6', accent: '#c9a24a', finish: 'pearl' },
+  'li-ning-halbertec-8000': { name: 'Pink/Blue', frame: '#f07aa8', accent: '#5fb7e6', finish: 'gloss' },
+  'li-ning-bladex-900': { name: 'Moon Max Blue', frame: '#2d4f8c', accent: '#d6dde8', finish: 'metallic' },
+};
+
+// Ready-made looks for rackets that aren't listed, or for a different paint job.
+const GENERIC_LOOKS = {
+  graphite: { name: 'Graphite & green', frame: '#223244', accent: '#2fd59a', finish: 'gloss' },
+  'red-black': { name: 'Red & black', frame: '#b3202a', accent: '#17181c', finish: 'gloss' },
+  'navy-gold': { name: 'Navy & gold', frame: '#1a2440', accent: '#c9a24a', finish: 'gloss' },
+  'white-green': { name: 'White & green', frame: '#ecebe8', accent: '#2fb36f', finish: 'pearl' },
+  'black-orange': { name: 'Black & orange', frame: '#17181c', accent: '#f26a1b', finish: 'matte' },
+  'silver-blue': { name: 'Silver & blue', frame: '#b9bec6', accent: '#2f6fd5', finish: 'metallic' },
+};
+
+const STRING_COLOURS = {
+  White: '#f2f2ee', Yellow: '#f4e04d', Black: '#2a2d33', Orange: '#ff8a3d', Red: '#e0383e',
+  Pink: '#f28ab8', Blue: '#4f8fe8', Lime: '#b4e64a', Purple: '#9a6fe0',
+};
+
+// The full look the 3D racket is drawn with.
+function resolveLook(r, look = r.look || {}) {
+  const m = racketPreset(r.model);
+  const choice = look.colourway || 'model';
+  let cw = null;
+  if (choice === 'custom') cw = { frame: look.frame, accent: look.accent, finish: look.finish };
+  else if (choice === 'model') cw = m && COLOURWAYS[m.id];
+  else cw = GENERIC_LOOKS[choice];
+  if (!cw || !cw.frame) cw = GENERIC_LOOKS.graphite;
+  return {
+    head: m ? m.head : 'isometric',
+    frame: cw.frame, accent: cw.accent, finish: cw.finish || 'gloss',
+    grip: look.grip || '#15171b',
+    strings: look.strings || STRING_COLOURS.White,
+  };
+}
+
 function slug(s) {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
@@ -469,6 +530,7 @@ window.attachRacketScene = api => {
   scene3d = api;
   els.fallback.hidden = true;
   if (listener && listener.running) api.setListening(true);
+  api.setLook(resolveLook(activeRacket()));
   sendInsets();
   sceneResult();
 };
@@ -954,7 +1016,11 @@ function renderRacketList() {
     card.setAttribute('aria-current', String(r.id === state.activeId));
     const name = document.createElement('span');
     name.className = 'rc-name';
-    name.textContent = r.name;
+    const look = resolveLook(r);
+    const swatch = document.createElement('i');
+    swatch.className = 'swatch';
+    swatch.style.background = `linear-gradient(135deg, ${look.frame} 55%, ${look.accent} 55%)`;
+    name.append(swatch, r.name);
     const meta = document.createElement('span');
     meta.className = 'rc-meta';
     meta.textContent = racketSummary(r);
@@ -1043,6 +1109,7 @@ function openMore() {
 }
 
 function renderAll() {
+  if (scene3d) scene3d.setLook(resolveLook(activeRacket()));
   renderUnits();
   renderChip();
   renderRacketList();
@@ -1264,9 +1331,82 @@ function fillPresetSelect(select, presets, label) {
 fillPresetSelect(racketForm.elements.model, RACKET_PRESETS, shortName);
 fillPresetSelect(racketForm.elements.string, STRING_PRESETS, p => `${shortName(p)} (${p.gaugeLabel})`);
 
+/* ----- Look: colours for the 3D racket ----- */
+
+function fillLookSelects() {
+  const f = racketForm.elements;
+  f.lookStrings.innerHTML = '';
+  for (const [name, hex] of Object.entries(STRING_COLOURS)) {
+    const o = document.createElement('option');
+    o.value = hex;
+    o.textContent = name;
+    f.lookStrings.appendChild(o);
+  }
+}
+fillLookSelects();
+
+// The colourway list depends on the model picked: its stock colours come first.
+function renderColourwayOptions(selected) {
+  const f = racketForm.elements;
+  const m = racketPreset(f.model.value);
+  const cw = m && COLOURWAYS[m.id];
+  f.lookColourway.innerHTML = '';
+  const add = (value, text) => {
+    const o = document.createElement('option');
+    o.value = value;
+    o.textContent = text;
+    f.lookColourway.appendChild(o);
+  };
+  if (cw) add('model', `Stock colours: ${cw.name}${cw.approx ? ' (approximate)' : ''}`);
+  for (const [id, g] of Object.entries(GENERIC_LOOKS)) add(id, g.name);
+  add('custom', 'Custom colours');
+  f.lookColourway.value = [...f.lookColourway.options].some(o => o.value === selected) ? selected : (cw ? 'model' : 'graphite');
+}
+
+function formRacket() {
+  const f = racketForm.elements;
+  return { model: f.model.value };
+}
+
+function formLook() {
+  const f = racketForm.elements;
+  return {
+    colourway: f.lookColourway.value,
+    frame: f.lookFrame.value, accent: f.lookAccent.value, finish: f.lookFinish.value,
+    grip: f.lookGrip.value, strings: f.lookStrings.value,
+  };
+}
+
+// Show the chosen colourway's colours in the pickers, and preview it in 3D.
+function syncLookInputs() {
+  const f = racketForm.elements;
+  const look = resolveLook(formRacket(), formLook());
+  if (f.lookColourway.value !== 'custom') {
+    f.lookFrame.value = look.frame;
+    f.lookAccent.value = look.accent;
+    f.lookFinish.value = look.finish;
+  }
+  previewLook();
+}
+
+function previewLook() {
+  if (scene3d) scene3d.setLook(resolveLook(formRacket(), formLook()));
+}
+
+racketForm.elements.lookColourway.addEventListener('change', syncLookInputs);
+for (const n of ['lookFrame', 'lookAccent', 'lookFinish']) {
+  racketForm.elements[n].addEventListener('input', () => {
+    racketForm.elements.lookColourway.value = 'custom'; // tweaking a colour makes it custom
+    previewLook();
+  });
+}
+for (const n of ['lookGrip', 'lookStrings']) racketForm.elements[n].addEventListener('input', previewLook);
+
 racketForm.elements.model.addEventListener('change', () => {
   const f = racketForm.elements;
   const p = racketPreset(f.model.value);
+  renderColourwayOptions(f.lookColourway.value === 'custom' ? 'custom' : 'model');
+  syncLookInputs();
   if (!p) {
     $('sizeDetails').open = true;
     return;
@@ -1316,11 +1456,22 @@ function openRacketDialog(r, isNew) {
   $('calInfo').textContent = r.cal === 1
     ? 'Not calibrated yet. Readings use the physics model only.'
     : `Calibrated: model × ${r.cal.toFixed(3)}.`;
+  const look = r.look || {};
+  renderColourwayOptions(look.colourway || 'model');
+  const resolved = resolveLook(r);
+  f.lookFrame.value = resolved.frame;
+  f.lookAccent.value = resolved.accent;
+  f.lookFinish.value = resolved.finish;
+  f.lookGrip.value = resolved.grip;
+  f.lookStrings.value = Object.values(STRING_COLOURS).includes(resolved.strings) ? resolved.strings : STRING_COLOURS.White;
+  previewLook();
   racketDialog.returnValue = '';
   racketDialog.showModal();
 }
 
 racketDialog.addEventListener('close', () => {
+  // Undo the preview; renderAll below draws the saved look.
+  if (scene3d) scene3d.setLook(resolveLook(activeRacket()));
   if (racketDialog.returnValue !== 'save') return;
   const f = racketForm.elements;
   let r = editingId ? state.rackets.find(x => x.id === editingId) : null;
@@ -1340,6 +1491,7 @@ racketDialog.addEventListener('close', () => {
   r.strungKg = fromUnit(+f.strung.value);
   r.strungDate = f.strungDate.value;
   r.alertPct = +f.alertPct.value;
+  r.look = formLook();
   if (geometryChanged && editingId) r.cal = 1; // old calibration was for different geometry
   const restrung = isNew || r.strungDate !== prevDate || Math.abs(r.strungKg - prevKg) > 0.05;
   if (restrung) recordStringing(r, r.strungDate, r.strungKg);

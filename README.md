@@ -43,7 +43,7 @@ After changing `assets/icon-*.png` or the splash images, run `npx capacitor-asse
 Inside the phone app, **Export backup** opens the share sheet (save to Drive, Files, email…), and the screen stays awake while it's listening.
 
 ## Using it
-1. Tap the racket name at the top to pick or add a racket: its model, string, and the tension it was strung at.
+1. Tap the racket name at the top to pick or add a racket: its model, string, and the tension it was strung at. The 3D racket takes the model's head shape and stock colours, close to the maker's colourway but without logos or printed graphics. Under **Look** you can pick another colour scheme, set your own frame, accent and grip colours and finish, and choose your string colour.
 2. Press **Start listening**, then flick the centre of the strings 3 times. Each tap rings the 3D strings and sends a wave across the screen; when the taps agree, the racket turns to face you and the reading is confirmed, with a ± showing how closely the taps agreed.
 3. After a fresh restring, set the date strung to today. The app offers to calibrate on your next reading, which makes every later reading on that racket much more accurate.
 4. **Save reading** to track tension loss. Swipe up on the reading (or tap ☰) for history, the sound spectrum, settings and backups.
