@@ -30,7 +30,7 @@ Phones only allow microphone access over **https**, so the web version needs hos
 
 ## Developing
 
-The web app (`index.html`, `app.js`, `scene3d.js`, `style.css`) is the whole app. `scene3d.js` draws the 3D racket with [three.js](https://threejs.org) (r160, MIT, bundled in `vendor/` so it works offline). Real taps drive it: each tap rings the strings and sends a wave across the screen, rejected taps fade out grey or orange, and a confirmed reading turns the racket to face you. With Reduce Motion on, or without WebGL, the app shows its flat layout instead. The `android/` and `ios/` folders are [Capacitor](https://capacitorjs.com) shells that bundle it.
+The web app (`index.html`, `app.js`, `scene3d.js`, `style.css`) is the whole app. Fonts (Saira Condensed, IBM Plex Sans, JetBrains Mono; OFL) are bundled in `vendor/fonts/`. `scene3d.js` draws the 3D racket with [three.js](https://threejs.org) (r160, MIT, bundled in `vendor/` so it works offline). Real taps drive it: each tap rings the strings and sends a wave across the screen, rejected taps fade out grey or orange, and a confirmed reading turns the racket to face you. With Reduce Motion on, the racket stays still and only changes colour; without WebGL, a flat racket picture stands in. The `android/` and `ios/` folders are [Capacitor](https://capacitorjs.com) shells that bundle it.
 
 ```
 npm install
@@ -43,10 +43,11 @@ After changing `assets/icon-*.png` or the splash images, run `npx capacitor-asse
 Inside the phone app, **Export backup** opens the share sheet (save to Drive, Files, email…), and the screen stays awake while it's listening.
 
 ## Using it
-1. Set up your racket (**Edit**): string bed size, string gauge, and the tension it was strung at.
-2. **Start listening**, then flick the centre of the strings 3 times.
-3. After a fresh restring, press **Calibrate…** and enter the strung tension. Every later reading on that racket will be much more accurate.
-4. **Save reading** to track tension loss over time. The app warns you once the loss passes your restring threshold.
+1. Tap the racket name at the top to pick or add a racket: its model, string, and the tension it was strung at.
+2. Press **Start listening**, then flick the centre of the strings 3 times. Each tap rings the 3D strings and sends a wave across the screen; when the taps agree, the racket turns to face you and the reading is confirmed, with a ± showing how closely the taps agreed.
+3. After a fresh restring, set the date strung to today. The app offers to calibrate on your next reading, which makes every later reading on that racket much more accurate.
+4. **Save reading** to track tension loss. Swipe up on the reading (or tap ☰) for history, the sound spectrum, settings and backups.
+5. Swipe left or right on the racket to switch rackets.
 
 ## How it works
 The string bed is modelled as a drum membrane. Its pitch is f = 2.405·c / (2πR), where the wave speed is c = √(T / 2μ), T is the string tension, μ is the string's mass per metre (from the gauge), and R is the radius of a circle with the same area as the head. That sets the tension at 1200 Hz for your racket and string. Away from 1200 Hz, tension follows pitch^1.47 instead of the ideal pitch², because real frames give a little more at higher tension. Calibration then scales the result for each racket.

@@ -1,8 +1,10 @@
 // Network first so updates show up straight away; cached copy when offline at the court.
 // Bump VERSION (and the ?v= tags in index.html) with each release.
-const VERSION = 5;
+const VERSION = 6;
 const CACHE = `baddy-tension-v${VERSION}`;
-const SHELL = ['./', 'index.html', 'app.js', 'scene3d.js', 'vendor/three.module.min.js', 'style.css', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png'];
+const SHELL = ['./', 'index.html', 'app.js', 'scene3d.js', 'vendor/three.module.min.js',
+  'vendor/fonts/ibm-plex-sans-latin-400-normal.woff2', 'vendor/fonts/ibm-plex-sans-latin-600-normal.woff2', 'vendor/fonts/jetbrains-mono-latin-400-normal.woff2', 'vendor/fonts/jetbrains-mono-latin-600-normal.woff2', 'vendor/fonts/saira-condensed-latin-600-normal.woff2', 'vendor/fonts/saira-condensed-latin-700-normal.woff2',
+  'style.css', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
   // cache: 'reload' skips the browser's HTTP cache, so the offline copy is the new one.
