@@ -1431,7 +1431,15 @@ window.matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', r
 
 // The phone app ships its files inside the app, so it needs no offline cache.
 if (!NATIVE && 'serviceWorker' in navigator && location.protocol !== 'file:') {
-  navigator.serviceWorker.register('sw.js').catch(() => {});
+  // When a new version takes over, reload once so the page isn't left on old files.
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || reloaded || (listener && listener.running)) return;
+    reloaded = true;
+    location.reload();
+  });
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => reg.update()).catch(() => {});
 }
 
 renderAll();
