@@ -23,18 +23,23 @@
 </header>
 
 <main>
-  <section class="card racket-bar">
-    <label for="racketSelect" class="sr-only">Racket</label>
-    <select id="racketSelect"></select>
-    <button type="button" id="editRacket" class="ghost">Edit</button>
-    <button type="button" id="addRacket" class="ghost">+ New</button>
-    <p id="racketInfo" class="racket-info muted small"></p>
+  <section class="racket-bar" aria-label="Rackets">
+    <div class="rackets" id="racketCards"></div>
+    <div class="racket-actions">
+      <span class="pager" id="racketPager" aria-hidden="true"></span>
+      <button type="button" id="editRacket" class="ghost tiny">Edit racket</button>
+    </div>
   </section>
 
   <section class="card reading">
+    <div id="calPrompt" class="alert info cal-prompt" hidden>
+      <p id="calPromptText"></p>
+      <button type="button" id="calPromptDismiss" class="ghost tiny">Not now</button>
+    </div>
     <div id="alert" class="alert" hidden></div>
     <div class="big"><span id="tensionValue">--</span><span id="tensionUnit" class="unit">lbs</span></div>
     <div class="sub"><span id="freqValue">-- Hz</span><span class="dot">·</span><span id="lossValue">--</span></div>
+    <div id="confidence" class="confidence"></div>
     <div class="taps" id="tapDots" aria-hidden="true"></div>
     <p id="status" class="status">Press <b>Start listening</b>, hold the phone near the racket, then flick the centre of the strings with a fingernail.</p>
     <button type="button" id="listenBtn" class="primary">Start listening</button>
@@ -56,10 +61,17 @@
   <section class="card">
     <div class="card-head">
       <h2>History</h2>
-      <span id="historyNote" class="muted"></span>
+      <div class="seg" role="group" aria-label="History range">
+        <button type="button" data-view="current">Since restring</button>
+        <button type="button" data-view="all">All</button>
+      </div>
     </div>
+    <p id="historyNote" class="muted small history-note"></p>
     <canvas id="historyChart"></canvas>
     <ul id="historyList" class="history"></ul>
+    <div class="row history-actions">
+      <button type="button" id="csvBtn" class="ghost">Export CSV</button>
+    </div>
   </section>
 
   <details class="card">
@@ -84,7 +96,9 @@
       <ul>
         <li>Tap the <b>centre</b> of the strings. A fingernail flick or the butt of another racket works well.</li>
         <li>Measure somewhere quiet, with the phone 5–20 cm from the strings.</li>
-        <li>Press <b>Calibrate…</b> right after a fresh restring, entering the tension it was strung at. This corrects for your racket's frame and string, and makes later readings far more accurate.</li>
+        <li>Calibrate right after a fresh restring. Set the date strung to today under <b>Edit racket</b> and the app offers to calibrate on your next reading. This corrects for your racket's frame and string, and makes later readings far more accurate.</li>
+        <li>The <b>±</b> after a reading shows how closely your taps agreed. If they disagree, the app asks for another tap.</li>
+        <li>Swipe the racket cards at the top to switch rackets.</li>
         <li>Pick your racket and string under <b>Edit</b>. The string gauge matters most: tension scales with gauge squared.</li>
         <li>Expect about 5–10% loss in the first day after stringing. That's normal.</li>
         <li>Using the same racket over time, the trend is more reliable than any single number.</li>
