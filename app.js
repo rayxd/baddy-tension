@@ -439,44 +439,65 @@ async function keepAwake(on) {
 
 const $ = id => document.getElementById(id);
 const els = {
-  racketCards: $('racketCards'), pager: $('racketPager'), tension: $('tensionValue'), unit: $('tensionUnit'),
+  stage: $('stage'), bar: $('topBar'), sheet: $('sheet'), fallback: $('stageFallback'), toast: $('toast'),
+  chip: $('racketChipText'), pill: $('pill'), drawer: $('racketDrawer'), racketList: $('racketList'), more: $('morePanel'),
+  tension: $('tensionValue'), unit: $('tensionUnit'), actions: $('readingActions'),
   confidence: $('confidence'), calPrompt: $('calPrompt'), calPromptText: $('calPromptText'),
   freq: $('freqValue'), loss: $('lossValue'), alert: $('alert'), status: $('status'),
   taps: $('tapDots'), listen: $('listenBtn'), save: $('saveBtn'), calibrate: $('calibrateBtn'),
-  spectrum: $('spectrum'), level: $('level'), peak: $('peakLabel'),
+  spectrum: $('spectrum'), level: $('level'), peak: $('peakLabel'), peak2: $('peakLabel2'),
   history: $('historyChart'), historyList: $('historyList'), historyNote: $('historyNote'),
 };
+const REDUCED_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 let listener = null;
 let tapFreqs = []; // every tap heard in the current measurement
 let lastSet = []; // the taps behind the reading shown
 let lastFreq = null;
 let setDone = false; // the measurement finished; the next tap starts a new one
+let readingSerial = 0; // counts confirmed readings, so Save knows what it saved
+let savedSerial = -1;
 let lastTapAt = 0;
 let noiseTimer = 0;
 let noisyWarned = false;
 let spectrumFrame = 0;
+let pillFlash = null; // a short-lived label, e.g. "Overtone skipped"
 let scene3d = null; // the 3D racket view, when the device supports it
 
 // scene3d.js loads after this file and calls this once its scene is ready.
 window.attachRacketScene = api => {
   scene3d = api;
-  document.body.classList.add('has-3d');
+  els.fallback.hidden = true;
   if (listener && listener.running) api.setListening(true);
-  renderStage();
+  sendInsets();
+  sceneResult();
 };
 
-// The label over the 3D racket: what the app is doing right now.
-function renderStage() {
-  const pill = $('stagePill');
-  if (!pill) return;
+// Tell the 3D view how much of the screen the top bar and sheet cover, so it
+// centres the racket in the space between them.
+function sendInsets() {
+  if (!scene3d) return;
+  const st = els.stage.getBoundingClientRect();
+  scene3d.setInsets(els.bar.getBoundingClientRect().bottom - st.top, st.bottom - els.sheet.getBoundingClientRect().top);
+}
+new ResizeObserver(sendInsets).observe(els.sheet);
+
+function setPeak(text) {
+  els.peak.textContent = text;
+  els.peak2.textContent = text;
+}
+
+// The status label at the top of the sheet: what the app is doing right now.
+function renderPill() {
   const r = activeRacket();
   let text = 'Ready', kind = '';
-  if (setDone && lastFreq != null) {
+  if (pillFlash && performance.now() < pillFlash.until) {
+    ({ text, kind } = pillFlash);
+  } else if (setDone && lastFreq != null) {
     const rough = (spreadKg(lastSet, r) || 0) * 2 > MAX_SPREAD_KG;
     const lossPct = ((r.strungKg - tensionKg(lastFreq, r)) / r.strungKg) * 100;
     if (rough) { text = 'Rough reading'; kind = 'warn'; }
-    else if (lossPct >= r.alertPct) { text = 'Time to restring'; kind = 'warn'; }
+    else if (lossPct >= r.alertPct) { text = 'Restring'; kind = 'warn'; }
     else { text = 'Confirmed'; kind = 'ok'; }
   } else if (tapFreqs.length) {
     text = tapFreqs.length >= state.settings.taps ? 'One more tap' : 'Calculating';
@@ -485,8 +506,14 @@ function renderStage() {
     text = 'Listening';
     kind = 'live';
   }
-  pill.textContent = text;
-  pill.className = `stage-pill ${kind}`;
+  els.pill.textContent = text;
+  els.pill.className = `pill ${kind}`;
+}
+
+function flashPill(text, kind, ms = 2500) {
+  pillFlash = { text, kind, until: performance.now() + ms };
+  renderPill();
+  setTimeout(renderPill, ms + 20);
 }
 
 function sceneResult() {
@@ -510,6 +537,16 @@ function setStatus(text, kind = '') {
   els.status.classList.toggle('tip', kind === 'tip');
 }
 
+let toastTimer = 0;
+function toast(text) {
+  els.toast.hidden = true;
+  void els.toast.offsetWidth; // restart the fade
+  els.toast.textContent = text;
+  els.toast.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { els.toast.hidden = true; }, 1900);
+}
+
 function renderUnits() {
   document.querySelectorAll('[data-unit]').forEach(b => {
     b.setAttribute('aria-pressed', String(b.dataset.unit === state.unit));
@@ -530,43 +567,69 @@ function renderTapDots() {
   }
 }
 
+// The big number rolls to each new value, as in the storyboard.
+let shownValue = null, numberFrame = 0;
+function setNumber(value) {
+  cancelAnimationFrame(numberFrame);
+  if (value == null) { shownValue = null; els.tension.textContent = '--'; return; }
+  const from = shownValue;
+  shownValue = value;
+  if (from == null || REDUCED_MOTION || Math.abs(from - value) < 0.05) {
+    els.tension.textContent = value.toFixed(1);
+    return;
+  }
+  const t0 = performance.now();
+  const step = now => {
+    const k = Math.min(1, (now - t0) / 450);
+    els.tension.textContent = (from + (value - from) * (1 - Math.pow(1 - k, 3))).toFixed(1);
+    if (k < 1) numberFrame = requestAnimationFrame(step);
+  };
+  numberFrame = requestAnimationFrame(step);
+}
+
 function renderReading() {
-  renderStage();
+  renderPill();
   const r = activeRacket();
   const strung = `${fmt(r.strungKg)} ${state.unit}`;
   els.alert.hidden = true;
-  els.alert.className = 'alert';
+  els.alert.className = 'note';
+  els.tension.className = 'num';
   els.calPrompt.hidden = !r.calPrompt;
   els.calPromptText.textContent = `Just restrung? Tap the centre ${state.settings.taps} time${state.settings.taps === 1 ? '' : 's'} and the app will calibrate this racket to ${strung}.`;
   if (lastFreq == null) {
-    els.tension.textContent = '--';
+    setNumber(null);
     els.freq.textContent = '-- Hz';
     els.loss.textContent = `Strung at ${strung}`;
     els.confidence.textContent = '';
-    els.save.disabled = true;
-    els.calibrate.disabled = true;
+    els.actions.hidden = true;
+    sendInsets();
     return;
   }
   const kg = tensionKg(lastFreq, r);
-  els.tension.textContent = fmt(kg);
+  setNumber(toUnit(kg));
   renderConfidence(r);
   els.freq.textContent = `${Math.round(lastFreq)} Hz`;
   const lossPct = ((r.strungKg - kg) / r.strungKg) * 100;
   els.loss.textContent = lossPct >= 0
     ? `${lossPct.toFixed(0)}% below ${strung}`
     : `${(-lossPct).toFixed(0)}% above ${strung}`;
-  els.save.disabled = false;
-  els.calibrate.disabled = false;
+  els.actions.hidden = false;
+  const saved = savedSerial === readingSerial;
+  els.save.disabled = saved;
+  els.save.textContent = saved ? 'Saved' : 'Save reading';
+  const rough = (spreadKg(lastSet, r) || 0) * 2 > MAX_SPREAD_KG;
+  if (setDone && !rough) els.tension.classList.add(lossPct >= r.alertPct ? 'warn' : 'ok');
 
   if (lossPct >= r.alertPct) {
-    els.alert.textContent = `Down ${lossPct.toFixed(0)}% from the strung tension. Time to restring.`;
+    els.alert.textContent = `Down ${lossPct.toFixed(0)}%. Time to restring.`;
     els.alert.classList.add('warn');
     els.alert.hidden = false;
   } else if (lossPct <= -15 && r.cal === 1) {
-    els.alert.textContent = 'Reading is well above the strung tension. Check the head size and gauge, or calibrate this racket.';
+    els.alert.textContent = 'Reading is well above the strung tension. Check the racket and string, or calibrate this racket.';
     els.alert.classList.add('info');
     els.alert.hidden = false;
   }
+  sendInsets();
 }
 
 function sizeCanvas(canvas, cssHeight) {
@@ -631,7 +694,7 @@ function drawSpectrum() {
     ctx.setLineDash([]);
   }
 
-  if (listener && listener.running) spectrumFrame = requestAnimationFrame(drawSpectrum);
+  if (listener && listener.running && els.more.open) spectrumFrame = requestAnimationFrame(drawSpectrum);
 }
 
 function racketReadings(r) {
@@ -814,7 +877,7 @@ function drawHistory() {
       state.readings = state.readings.filter(x => x.id !== it.id);
       saveState();
       drawHistory();
-      renderRacketCards();
+      renderRacketList();
     };
     li.append(val, meta, del);
     els.historyList.appendChild(li);
@@ -863,25 +926,32 @@ function shortName(p) {
   return p.name.slice(p.brand.length + 1);
 }
 
-/* ---------- Racket cards (swipe between rackets) ---------- */
+/* ---------- Rackets: the name tag, the list, and swiping on the racket ---------- */
+
+function stringShort(r) {
+  const s = stringPreset(r.string);
+  return s ? shortName(s) : `${r.gaugeMm} mm string`;
+}
 
 function racketSummary(r) {
   const m = racketPreset(r.model);
-  const s = stringPreset(r.string);
-  const model = m ? shortName(m) : `${r.lengthMm}×${r.widthMm} mm head`;
-  const string = s ? shortName(s) : `${r.gaugeMm} mm string`;
-  return `${model} · ${string}`;
+  return `${m ? shortName(m) : `${r.lengthMm}×${r.widthMm} mm head`} · ${stringShort(r)}`;
 }
 
-function renderRacketCards() {
-  const box = els.racketCards;
+function renderChip() {
+  const r = activeRacket();
+  els.chip.textContent = `${r.name} · ${stringShort(r)}`;
+}
+
+function renderRacketList() {
+  const box = els.racketList;
   box.innerHTML = '';
   for (const r of state.rackets) {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'racket-card';
-    b.dataset.id = r.id;
-    b.setAttribute('aria-pressed', String(r.id === state.activeId));
+    const card = document.createElement('div');
+    card.className = 'racket-card';
+    card.tabIndex = 0;
+    card.setAttribute('role', 'button');
+    card.setAttribute('aria-current', String(r.id === state.activeId));
     const name = document.createElement('span');
     name.className = 'rc-name';
     name.textContent = r.name;
@@ -894,78 +964,88 @@ function renderRacketCards() {
     if (last) {
       const v = document.createElement('b');
       v.textContent = `${fmt(tensionKg(last.freq, r))} ${state.unit}`;
-      line.append(v, ` · ${agoText(new Date(last.t).toISOString().slice(0, 10)) || shortDate(last.t)}`);
+      line.append(v, ` · ${shortDate(last.t)}`);
     } else {
       line.textContent = 'No readings yet';
     }
     const tags = document.createElement('span');
     tags.className = 'rc-meta';
     tags.textContent = `${r.strungDate ? `Strung ${agoText(r.strungDate)} · ` : ''}${r.cal !== 1 ? 'calibrated' : 'not calibrated'}`;
-    b.append(name, meta, line, tags);
-    b.onclick = () => {
-      if (r.id !== state.activeId) selectRacket(r.id);
-      scrollToCard(b, true);
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'btn edit';
+    edit.textContent = 'Edit';
+    edit.onclick = e => { e.stopPropagation(); openRacketDialog(r, false); };
+    card.append(name, meta, line, tags, edit);
+    const pick = () => {
+      if (r.id !== state.activeId) {
+        const from = state.rackets.findIndex(x => x.id === state.activeId);
+        const to = state.rackets.indexOf(r);
+        selectRacket(r.id, to > from ? 1 : -1);
+      }
+      els.drawer.close();
     };
-    box.appendChild(b);
+    card.onclick = pick;
+    card.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); } };
+    box.appendChild(card);
   }
-  const add = document.createElement('button');
-  add.type = 'button';
-  add.className = 'racket-card add';
-  add.id = 'addRacket';
-  add.textContent = '+ New racket';
-  add.onclick = () => openRacketDialog(newRacket(`Racket ${state.rackets.length + 1}`), true);
-  box.appendChild(add);
-
-  els.pager.innerHTML = '';
-  if (state.rackets.length > 1) {
-    for (const r of state.rackets) {
-      const i = document.createElement('i');
-      if (r.id === state.activeId) i.className = 'on';
-      els.pager.appendChild(i);
-    }
-  }
-  const active = box.querySelector('[aria-pressed="true"]');
-  if (active) scrollToCard(active, false);
 }
 
-function scrollToCard(card, smooth) {
-  const box = els.racketCards;
-  const left = card.offsetLeft - (box.clientWidth - card.offsetWidth) / 2;
-  box.scrollTo({ left, behavior: smooth ? 'smooth' : 'auto' });
-}
-
-function selectRacket(id) {
+function selectRacket(id, dir = 1) {
   state.activeId = id;
   tapFreqs = [];
   lastSet = [];
   lastFreq = null;
   setDone = false;
-  els.peak.textContent = '';
-  if (scene3d) scene3d.reset();
+  setPeak('');
+  if (scene3d) { scene3d.reset(); scene3d.spin(dir); }
   saveState();
   renderAll();
   setStatus(listener && listener.running ? `Measuring ${activeRacket().name}. Tap the centre of the strings.` : `Switched to ${activeRacket().name}.`);
 }
 
-// When a swipe settles, the card nearest the middle becomes the active racket.
-let swipeTimer = 0;
-els.racketCards.addEventListener('scroll', () => {
-  clearTimeout(swipeTimer);
-  swipeTimer = setTimeout(() => {
-    const box = els.racketCards;
-    const mid = box.scrollLeft + box.clientWidth / 2;
-    let best = null, dist = Infinity;
-    for (const c of box.querySelectorAll('.racket-card[data-id]')) {
-      const d = Math.abs(c.offsetLeft + c.offsetWidth / 2 - mid);
-      if (d < dist) { dist = d; best = c; }
-    }
-    if (best && best.dataset.id !== state.activeId) selectRacket(best.dataset.id);
-  }, 140);
-}, { passive: true });
+function switchBy(step) {
+  const n = state.rackets.length;
+  if (n < 2) { toast('Add another racket to switch'); return; }
+  const i = state.rackets.findIndex(r => r.id === state.activeId);
+  const next = state.rackets[(i + step + n) % n];
+  selectRacket(next.id, step);
+  toast(next.name);
+}
+
+// Swipe left or right on the racket to switch; swipe up on the sheet for history.
+function onSwipe(el, handler) {
+  let sx = null, sy = 0, t0 = 0;
+  el.addEventListener('pointerdown', e => {
+    if (e.target.closest('button, input, select, a')) return;
+    sx = e.clientX; sy = e.clientY; t0 = performance.now();
+  });
+  el.addEventListener('pointerup', e => {
+    if (sx == null) return;
+    const dx = e.clientX - sx, dy = e.clientY - sy;
+    sx = null;
+    if (performance.now() - t0 < 800) handler(dx, dy);
+  });
+  el.addEventListener('pointercancel', () => { sx = null; });
+}
+onSwipe(els.stage, (dx, dy) => {
+  if (Math.abs(dx) > 50 && Math.abs(dx) > 1.5 * Math.abs(dy)) switchBy(dx < 0 ? 1 : -1);
+});
+onSwipe(els.sheet, (dx, dy) => {
+  if (dy < -40 && Math.abs(dy) > 1.5 * Math.abs(dx)) openMore();
+});
+
+function openMore() {
+  if (els.more.open) return;
+  els.more.showModal();
+  drawHistory();
+  drawSpectrum();
+}
 
 function renderAll() {
   renderUnits();
-  renderRacketCards();
+  renderChip();
+  renderRacketList();
   renderTapDots();
   renderReading();
   drawSpectrum();
@@ -975,7 +1055,7 @@ function renderAll() {
 /* ---------- Taps ---------- */
 
 function flashTap() {
-  const card = els.tension.closest('.reading');
+  const card = els.sheet;
   card.classList.remove('hit');
   void card.offsetWidth; // restart the animation
   card.classList.add('hit');
@@ -1046,6 +1126,7 @@ function handleTap(result) {
     const ratio = freq / median(tapFreqs);
     if (ratio > 1.45 && ratio < 1.75) {
       if (scene3d) scene3d.classify({ kind: 'overtone', freq });
+      flashPill('Overtone skipped', 'warn');
       setStatus('That tap rang an overtone, so it was skipped. Tap the exact centre again.', 'tip');
       return;
     }
@@ -1057,7 +1138,7 @@ function handleTap(result) {
   if (scene3d) scene3d.classify({ kind: 'ok', freq });
   lastSet = tapFreqs.length > need ? bestCluster(tapFreqs, need) : [...tapFreqs];
   lastFreq = median(lastSet);
-  els.peak.textContent = `last tap ${Math.round(freq)} Hz`;
+  setPeak(`last tap ${Math.round(freq)} Hz`);
   const loud = clipped ? ' That was very loud, so hold the phone a little further away.' : '';
 
   if (tapFreqs.length < need) {
@@ -1079,6 +1160,7 @@ function handleTap(result) {
   }
 
   setDone = true;
+  readingSerial++;
   renderTapDots();
   renderReading();
   sceneResult();
@@ -1115,7 +1197,7 @@ async function toggleListening() {
     els.listen.classList.remove('live');
     els.level.style.width = '0';
     setStatus(lastFreq != null ? 'Stopped. Your last reading is shown above.' : 'Stopped.');
-    renderStage();
+    renderPill();
     return;
   }
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -1148,7 +1230,7 @@ async function toggleListening() {
   keepAwake(true);
   noiseTimer = setInterval(checkNoise, 1000);
   if (scene3d) scene3d.setListening(true);
-  renderStage();
+  renderPill();
   setStatus(`Listening… tap the centre of the strings ${state.settings.taps} time${state.settings.taps === 1 ? '' : 's'}.`);
   drawSpectrum();
 }
@@ -1269,9 +1351,12 @@ racketDialog.addEventListener('close', () => {
   if (state.activeId !== r.id) {
     state.activeId = r.id;
     tapFreqs = []; lastSet = []; lastFreq = null; setDone = false;
+    if (scene3d) { scene3d.reset(); scene3d.spin(1); }
   }
   saveState();
   renderAll();
+  // A new racket goes straight to measuring.
+  if (isNew && els.drawer.open) els.drawer.close();
 });
 
 $('deleteRacket').onclick = () => {
@@ -1344,13 +1429,20 @@ els.listen.onclick = toggleListening;
 els.save.onclick = () => {
   if (lastFreq == null) return;
   state.readings.push({ id: uid(), racketId: state.activeId, t: Date.now(), freq: lastFreq, freqs: [...lastSet] });
+  savedSerial = readingSerial;
   saveState();
   drawHistory();
-  renderRacketCards();
-  setStatus('Saved to history.');
+  renderRacketList();
+  renderReading();
+  setStatus('Saved to history. Swipe up to see it.');
 };
 
-$('editRacket').onclick = () => openRacketDialog(activeRacket(), false);
+$('racketChip').onclick = () => { renderRacketList(); els.drawer.showModal(); };
+$('addRacket').onclick = () => openRacketDialog(newRacket(`Racket ${state.rackets.length + 1}`), true);
+$('moreBtn').onclick = openMore;
+$('grabber').onclick = openMore;
+// Tapping the dimmed backdrop closes the racket list.
+els.drawer.addEventListener('click', e => { if (e.target === els.drawer) els.drawer.close(); });
 
 $('calPromptDismiss').onclick = () => {
   activeRacket().calPrompt = false;
@@ -1426,8 +1518,7 @@ $('importFile').onchange = async e => {
 };
 
 window.addEventListener('resize', () => { drawSpectrum(); drawHistory(); });
-$('spectrumCard').addEventListener('toggle', drawSpectrum);
-window.matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', renderAll);
+window.addEventListener('resize', sendInsets);
 
 // The phone app ships its files inside the app, so it needs no offline cache.
 if (!NATIVE && 'serviceWorker' in navigator && location.protocol !== 'file:') {

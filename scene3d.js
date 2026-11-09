@@ -1,8 +1,9 @@
 // The 3D racket view. Real taps drive it: each tap rings the string bed like a
 // drum skin and sends a sound wave out across the screen; a confirmed reading
 // turns the racket to face you and locks the wave into a steady line.
-// app.js talks to it through window.attachRacketScene; if WebGL is missing or
-// Reduce Motion is on, this never attaches and the app keeps its flat layout.
+// app.js talks to it through window.attachRacketScene. Without WebGL this never
+// attaches and the app shows a flat racket picture instead. With Reduce Motion
+// on, the racket stays still and only its colours change.
 import * as THREE from './vendor/three.module.min.js';
 
 const COLORS = {
@@ -38,7 +39,7 @@ function webglAvailable() {
   }
 }
 
-function createScene(stage, canvas) {
+function createScene(stage, canvas, still) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, powerPreference: 'low-power' });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 
@@ -154,20 +155,27 @@ function createScene(stage, canvas) {
   let lastActivity = performance.now();
   let running = false, visible = true, onScreen = true;
   let prevT = now();
+  let insetTop = 0, insetBottom = 0; // screen covered by the top bar and the reading sheet
+  let spinStart = -10, spinDir = 1; // a full turn when you switch racket
 
   const col = new THREE.Color(), tmp = new THREE.Color();
 
+  // Fit the head in the open space between the top bar and the sheet, and
+  // centre it there by shifting the view.
   function fitCamera() {
     const w = canvas.clientWidth, h = canvas.clientHeight;
     if (!w || !h) return;
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
-    // Fit the head (plus a little throat) in height, and the head width.
-    const half = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
-    const zH = 1.75 / half;
-    const zW = 1.25 / (half * camera.aspect);
-    camera.position.set(0, 0.45, Math.max(zH, zW));
+    const free = Math.max(160, h - insetTop - insetBottom);
+    const tan = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+    // Pixels per scene unit at distance z is h / (2 z tan); fit 3.0 units of
+    // height into the free space and 2.5 units of width across the screen.
+    const z = Math.max((3.0 * h) / (2 * tan * free), (2.5 * h) / (2 * tan * w));
+    camera.position.set(0, 0.45, z);
     camera.lookAt(0, 0.45, 0);
+    const target = insetTop + free / 2;
+    camera.setViewOffset(w, h, 0, h / 2 - target, w, h);
     camera.updateProjectionMatrix();
   }
 
@@ -176,21 +184,23 @@ function createScene(stage, canvas) {
     const dt = Math.min(0.1, t - prevT);
     prevT = t;
 
-    // Ease listening and result lock towards their targets.
-    listen += ((listening ? 1 : 0) - listen) * Math.min(1, dt * 4);
-    lock += ((result ? 1 : 0) - lock) * Math.min(1, dt * 2.5);
+    // Ease listening and result lock towards their targets (jump when still).
+    listen += ((listening ? 1 : 0) - listen) * (still ? 1 : Math.min(1, dt * 4));
+    lock += ((result ? 1 : 0) - lock) * (still ? 1 : Math.min(1, dt * 2.5));
     const warn = result === 'warn';
     const finalColour = warn ? COLORS.amber : COLORS.accent;
 
     // Pose: idle sway, calmer while listening, square-on for a result.
-    const sway = 0.36 * Math.sin(t * (2 * Math.PI / 6));
+    const sway = still ? 0.25 : 0.36 * Math.sin(t * (2 * Math.PI / 6));
     const settle = smoothstep(lock);
-    racket.rotation.y = sway * (1 - 0.6 * listen) * (1 - settle);
-    racket.rotation.x = -0.08 * (1 - settle) + 0.04 * Math.sin(t * 0.9) * (1 - lock);
-    racket.position.y = 0.05 * Math.sin(t * 1.3);
+    const spinAge = (t - spinStart) / 0.7;
+    const spin = still || spinAge >= 1 ? 0 : spinDir * 2 * Math.PI * Math.pow(1 - spinAge, 3);
+    racket.rotation.y = sway * (1 - 0.6 * listen) * (1 - settle) + spin;
+    racket.rotation.x = -0.08 * (1 - settle) + (still ? 0 : 0.04 * Math.sin(t * 0.9) * (1 - lock));
+    racket.position.y = still ? 0 : 0.05 * Math.sin(t * 1.3);
 
     // Strings.
-    taps = taps.filter(p => t - p.t0 < 3);
+    taps = still ? [] : taps.filter(p => t - p.t0 < 3);
     let energy = 0, overEnergy = 0, dudEnergy = 0;
     for (const p of taps) {
       const age = t - p.t0;
@@ -199,7 +209,7 @@ function createScene(stage, canvas) {
       else if (p.kind === 'dud') dudEnergy += e;
       else energy += e;
     }
-    const shimmer = (0.004 + Math.min(0.02, level * 0.4)) * listen * (1 - lock);
+    const shimmer = still ? 0 : (0.004 + Math.min(0.02, level * 0.4)) * listen * (1 - lock);
     for (const s of strings) {
       for (let i = 0; i < NP; i++) {
         let z = shimmer * Math.sin(t * 23 + s.seed[i]);
@@ -209,7 +219,7 @@ function createScene(stage, canvas) {
           const amp = 0.16 * Math.exp(-age / decay) * Math.sin(2 * Math.PI * 3.1 * age + 0.4);
           z += amp * (p.kind === 'overtone' ? s.m1[i] : s.m0[i]);
         }
-        z += 0.012 * lock * Math.sin(t * 5) * s.m0[i];
+        if (!still) z += 0.012 * lock * Math.sin(t * 5) * s.m0[i];
         s.pos[i * 3 + 2] = z;
       }
       s.g.attributes.position.needsUpdate = true;
@@ -244,7 +254,7 @@ function createScene(stage, canvas) {
     else if (warn && lock > 0.5) waveColour = COLORS.amber;
     waveCore.mat.color.setHex(waveColour);
     waveGlow.mat.color.setHex(waveColour);
-    const noiseAmp = listen * (1 - lock) * (0.02 + Math.min(0.08, level * 1.5));
+    const noiseAmp = still ? 0 : listen * (1 - lock) * (0.02 + Math.min(0.08, level * 1.5));
     for (let i = 0; i < WN; i++) {
       const x = -WX + (2 * WX * i) / (WN - 1), ax = Math.abs(x);
       let y = noiseAmp * (Math.sin(x * 23 + t * 17) * 0.5 + Math.sin(x * 41 - t * 29) * 0.3 + Math.sin(x * 67 + t * 7) * 0.2);
@@ -257,7 +267,7 @@ function createScene(stage, canvas) {
         const env = Math.exp(-age / life) * Math.exp(-ax * 0.3) * (1 - Math.exp(-(front - ax) * 5));
         y += 0.42 * env * Math.sin(k * ax - 17 * age);
       }
-      y += lock * 0.11 * Math.sin(10 * x - t * 4) * Math.exp(-ax * 0.12);
+      y += lock * 0.11 * Math.sin(10 * x - (still ? 0 : t * 4)) * Math.exp(-ax * 0.12);
       ys[i] = y;
     }
     for (const rb of [waveCore, waveGlow]) {
@@ -273,8 +283,8 @@ function createScene(stage, canvas) {
     renderer.render(scene, camera);
 
     // Keep drawing while something is moving; otherwise rest on a still frame.
-    const busy = listening || taps.length || Math.abs(lock - (result ? 1 : 0)) > 0.01 ||
-      performance.now() - lastActivity < IDLE_STOP_MS;
+    const busy = !still && (listening || taps.length || Math.abs(lock - (result ? 1 : 0)) > 0.01 ||
+      t - spinStart < 0.8 || performance.now() - lastActivity < IDLE_STOP_MS);
     if (busy && visible && onScreen) requestAnimationFrame(frame);
     else running = false;
   }
@@ -300,6 +310,14 @@ function createScene(stage, canvas) {
 
   return {
     setListening(on) { listening = on; if (!on) level = 0; wake(); },
+    setInsets(top, bottom) {
+      if (Math.abs(top - insetTop) < 1 && Math.abs(bottom - insetBottom) < 1) return;
+      insetTop = top; insetBottom = bottom;
+      fitCamera();
+      wake();
+    },
+    // Spin the racket a full turn, e.g. when switching racket (1 or -1).
+    spin(dir) { spinStart = now(); spinDir = dir < 0 ? -1 : 1; wake(); },
     setLevel(rms) { level = rms; },
     // A tap landed: ring the strings now; classify() colours it once analysed.
     tap() { taps.push({ t0: now(), kind: 'pending', k: 10 }); wake(); },
@@ -319,12 +337,11 @@ function createScene(stage, canvas) {
 const stage = document.getElementById('stage');
 const canvas = document.getElementById('stageCanvas');
 const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-if (stage && canvas && !reduceMotion && webglAvailable()) {
+if (stage && canvas && webglAvailable()) {
   try {
-    stage.hidden = false;
-    const api = createScene(stage, canvas);
+    const api = createScene(stage, canvas, reduceMotion);
     if (window.attachRacketScene) window.attachRacketScene(api);
   } catch (e) {
-    stage.hidden = true; // fall back to the flat layout
+    /* the flat racket picture stays */
   }
 }
