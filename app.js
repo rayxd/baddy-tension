@@ -7,10 +7,27 @@ const GRAVITY = 9.80665;
 // Badminton strings are mostly multifilament nylon.
 const STRING_DENSITY = 1140; // kg/m^3
 // An ideal membrane rings higher than a real racket: the frame flexes and the
-// air the strings push around adds mass. 0.8 matches published tennis data;
-// per-racket calibration corrects the rest.
-const MEMBRANE_K = 0.8;
+// air the strings push around adds mass. Fitted to a reference recording of one
+// racket strung at 24, 26, 28 and 30 lbs (1177, 1237, 1316 and 1362 Hz).
+const MEMBRANE_K = 0.88;
 const BESSEL_J0_ZERO = 2.4048; // fundamental mode of a circular membrane
+// An ideal membrane gives tension ~ pitch^2, but in the reference recording
+// tension rose as pitch^1.47 (the frame gives a little more at higher tension).
+// The physics sets the level at REF_FREQ; the fitted exponent sets the slope.
+const REF_FREQ = 1200;
+const TENSION_EXPONENT = 1.47;
+// The (1,1) membrane mode rings ~1.59x the fundamental and is often as loud.
+const OVERTONE_DB = 12;
+const MODEL_VERSION = 2;
+// Rings below this are voices or room noise, not strings. Real taps in the
+// reference recording scored 29-47 dB; talking and bumps scored under 20.
+const MIN_SNR_DB = 20;
+// Taps whose tension spread is wider than this ask for another tap.
+const MAX_SPREAD_KG = 0.7; // about 1.5 lbs
+const EXTRA_TAPS = 2;
+// Background peak level above which the room is too noisy to tap reliably.
+const NOISY_LEVEL = 0.03;
+const CLIP_LEVEL = 0.98;
 
 const RING_SIZE = 1 << 16;
 const FFT_SIZE = 1 << 15;
@@ -89,6 +106,8 @@ function newRacket(name) {
     lengthMm: 220, widthMm: 190, gaugeMm: 0.68,
     strungKg: 26 / LBS_PER_KG, strungDate: today(),
     alertPct: 10, cal: 1,
+    stringings: [], // [{ date, kg }], one per restring
+    calPrompt: false,
   };
 }
 
@@ -97,7 +116,10 @@ function defaultState() {
   return {
     unit: 'lbs',
     activeId: r.id,
-    settings: { fmin: 350, fmax: 2200, sensitivity: 6, taps: 3 },
+    // 600-1800 Hz covers roughly 10-45 lbs and keeps most overtones out.
+    settings: { fmin: 600, fmax: 1800, sensitivity: 6, taps: 3 },
+    modelVersion: MODEL_VERSION,
+    historyView: 'current',
     rackets: [r],
     readings: [],
   };
@@ -111,6 +133,24 @@ function loadState() {
       s.settings = Object.assign(d.settings, s.settings);
       s.readings = s.readings || [];
       if (!s.rackets.some(r => r.id === s.activeId)) s.activeId = s.rackets[0].id;
+      s.historyView = s.historyView === 'all' ? 'all' : 'current';
+      for (const r of s.rackets) {
+        if (!Array.isArray(r.stringings)) {
+          r.stringings = r.strungDate ? [{ date: r.strungDate, kg: r.strungKg }] : [];
+        }
+      }
+      if ((s.modelVersion || 1) < MODEL_VERSION) {
+        // The tension model changed, so old calibration factors no longer fit.
+        // Saved readings keep their pitch and are simply re-converted.
+        s.rackets.forEach(r => { r.cal = 1; });
+        if (s.settings.fmin === 350 && s.settings.fmax === 2200) {
+          const fresh = defaultState().settings;
+          s.settings.fmin = fresh.fmin;
+          s.settings.fmax = fresh.fmax;
+        }
+        s.modelVersion = MODEL_VERSION;
+        try { localStorage.setItem(STORE_KEY, JSON.stringify(s)); } catch (e) { /* ignore */ }
+      }
       return s;
     }
   } catch (e) { /* storage unavailable or corrupt */ }
@@ -132,11 +172,15 @@ function activeRacket() {
 // Model the string bed as a membrane: strings at spacing d with tension T give
 // membrane tension T/d per direction and areal density 2*mu/d, so the wave speed
 // is sqrt(T / (2*mu)). The oval head is treated as a circle of equal area.
-function uncalibratedTensionKg(freq, r) {
+function membraneTensionKg(freq, r) {
   const radius = Math.sqrt((r.lengthMm / 1000) * (r.widthMm / 1000)) / 2;
   const mu = STRING_DENSITY * Math.PI * Math.pow(r.gaugeMm / 2000, 2);
   const waveSpeed = (2 * Math.PI * radius * freq) / (BESSEL_J0_ZERO * MEMBRANE_K);
   return (2 * mu * waveSpeed * waveSpeed) / GRAVITY;
+}
+
+function uncalibratedTensionKg(freq, r) {
+  return membraneTensionKg(REF_FREQ, r) * Math.pow(freq / REF_FREQ, TENSION_EXPONENT);
 }
 
 function tensionKg(freq, r) {
@@ -201,13 +245,27 @@ function analyzeTap(samples, sampleRate, fmin, fmax) {
   const lo = Math.max(2, Math.floor(fmin / binHz));
   const hi = Math.min(FFT_SIZE / 2 - 2, Math.ceil(fmax / binHz));
   const mags = new Float64Array(hi - lo + 1);
-  let best = 0;
+  let loudest = 0;
   for (let k = lo; k <= hi; k++) {
     const m = Math.hypot(re[k], im[k]);
     mags[k - lo] = m;
-    if (m > mags[best]) best = k - lo;
+    if (m > mags[loudest]) loudest = k - lo;
   }
-  if (best === 0 || best === mags.length - 1) return null;
+
+  // Higher ring modes can be as loud as the fundamental, so take the lowest
+  // clear peak (local max over +-30 Hz) within OVERTONE_DB of the loudest.
+  const floor = mags[loudest] * Math.pow(10, -OVERTONE_DB / 20);
+  const halfWidth = Math.max(1, Math.round(30 / binHz));
+  let best = loudest;
+  for (let i = 1; i < loudest; i++) {
+    if (mags[i] < floor) continue;
+    let isPeak = true;
+    for (let j = Math.max(0, i - halfWidth); j <= Math.min(mags.length - 1, i + halfWidth); j++) {
+      if (mags[j] > mags[i]) { isPeak = false; break; }
+    }
+    if (isPeak) { best = i; break; }
+  }
+  if (best === 0 || best === mags.length - 1) return { freq: null, snrDb: 0 };
 
   // Parabolic interpolation on log magnitude for sub-bin precision.
   const a = Math.log(mags[best - 1] + 1e-12);
@@ -309,13 +367,19 @@ class TapListener {
     if (this.pendingOnset !== null) {
       if (this.written - this.pendingOnset >= skip + length) {
         const samples = new Float32Array(length);
-        for (let i = 0; i < length; i++) {
-          samples[i] = this.ring[(this.pendingOnset + skip + i) % RING_SIZE];
+        let tapPeak = 0;
+        for (let i = 0; i < skip + length; i++) {
+          const v = this.ring[(this.pendingOnset + i) % RING_SIZE];
+          if (i >= skip) samples[i - skip] = v;
+          if (Math.abs(v) > tapPeak) tapPeak = Math.abs(v);
         }
         this.pendingOnset = null;
         const { fmin, fmax } = state.settings;
         const result = analyzeTap(samples, this.sampleRate, fmin, fmax);
-        if (result) this.onTap(result);
+        // How loud the tap was against what triggered it, for coaching.
+        result.loudness = tapPeak / this.trigger;
+        result.clipped = tapPeak >= CLIP_LEVEL;
+        this.onTap(result);
       }
       return;
     }
@@ -335,6 +399,7 @@ class TapListener {
         if (Math.abs(chunk[i]) > threshold) { onset = start + i; break; }
       }
       this.armed = false;
+      this.trigger = threshold;
       this.pendingOnset = onset;
       this.lastOnset = onset;
       this.onOnset();
@@ -345,11 +410,37 @@ class TapListener {
   }
 }
 
+/* ---------- Native app (Capacitor) ---------- */
+
+// When packaged as a phone app, Capacitor's bridge is on window. Plugins are
+// called straight through the bridge, so the web build needs no bundler.
+const NATIVE = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+
+function nativeCall(plugin, method, options = {}) {
+  return window.Capacitor.nativePromise(plugin, method, options);
+}
+
+// Stop the screen sleeping while you tap, or the mic goes quiet mid-reading.
+let wakeLock = null;
+async function keepAwake(on) {
+  try {
+    if (NATIVE) {
+      await nativeCall('KeepAwake', on ? 'keepAwake' : 'allowSleep');
+    } else if (on && 'wakeLock' in navigator) {
+      wakeLock = await navigator.wakeLock.request('screen');
+    } else if (!on && wakeLock) {
+      await wakeLock.release();
+      wakeLock = null;
+    }
+  } catch (e) { /* not supported; harmless */ }
+}
+
 /* ---------- UI ---------- */
 
 const $ = id => document.getElementById(id);
 const els = {
-  racketSelect: $('racketSelect'), tension: $('tensionValue'), unit: $('tensionUnit'),
+  racketCards: $('racketCards'), pager: $('racketPager'), tension: $('tensionValue'), unit: $('tensionUnit'),
+  confidence: $('confidence'), calPrompt: $('calPrompt'), calPromptText: $('calPromptText'),
   freq: $('freqValue'), loss: $('lossValue'), alert: $('alert'), status: $('status'),
   taps: $('tapDots'), listen: $('listenBtn'), save: $('saveBtn'), calibrate: $('calibrateBtn'),
   spectrum: $('spectrum'), level: $('level'), peak: $('peakLabel'),
@@ -357,16 +448,66 @@ const els = {
 };
 
 let listener = null;
-let tapFreqs = [];
+let tapFreqs = []; // every tap heard in the current measurement
+let lastSet = []; // the taps behind the reading shown
 let lastFreq = null;
+let setDone = false; // the measurement finished; the next tap starts a new one
+let lastTapAt = 0;
+let noiseTimer = 0;
+let noisyWarned = false;
 let spectrumFrame = 0;
+let scene3d = null; // the 3D racket view, when the device supports it
+
+// scene3d.js loads after this file and calls this once its scene is ready.
+window.attachRacketScene = api => {
+  scene3d = api;
+  document.body.classList.add('has-3d');
+  if (listener && listener.running) api.setListening(true);
+  renderStage();
+};
+
+// The label over the 3D racket: what the app is doing right now.
+function renderStage() {
+  const pill = $('stagePill');
+  if (!pill) return;
+  const r = activeRacket();
+  let text = 'Ready', kind = '';
+  if (setDone && lastFreq != null) {
+    const rough = (spreadKg(lastSet, r) || 0) * 2 > MAX_SPREAD_KG;
+    const lossPct = ((r.strungKg - tensionKg(lastFreq, r)) / r.strungKg) * 100;
+    if (rough) { text = 'Rough reading'; kind = 'warn'; }
+    else if (lossPct >= r.alertPct) { text = 'Time to restring'; kind = 'warn'; }
+    else { text = 'Confirmed'; kind = 'ok'; }
+  } else if (tapFreqs.length) {
+    text = tapFreqs.length >= state.settings.taps ? 'One more tap' : 'Calculating';
+    kind = 'live';
+  } else if (listener && listener.running) {
+    text = 'Listening';
+    kind = 'live';
+  }
+  pill.textContent = text;
+  pill.className = `stage-pill ${kind}`;
+}
+
+function sceneResult() {
+  if (!scene3d) return;
+  const r = activeRacket();
+  if (!setDone || lastFreq == null || (spreadKg(lastSet, r) || 0) * 2 > MAX_SPREAD_KG) {
+    scene3d.setResult(null);
+    return;
+  }
+  const lossPct = ((r.strungKg - tensionKg(lastFreq, r)) / r.strungKg) * 100;
+  scene3d.setResult(lossPct >= r.alertPct ? 'warn' : 'ok');
+}
 
 function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
-function setStatus(text) {
+// kind 'tip' marks coaching: something to change about the next tap.
+function setStatus(text, kind = '') {
   els.status.textContent = text;
+  els.status.classList.toggle('tip', kind === 'tip');
 }
 
 function renderUnits() {
@@ -377,19 +518,10 @@ function renderUnits() {
   els.unit.textContent = state.unit;
 }
 
-function renderRacketSelect() {
-  els.racketSelect.innerHTML = '';
-  for (const r of state.rackets) {
-    const o = document.createElement('option');
-    o.value = r.id;
-    o.textContent = r.name;
-    els.racketSelect.appendChild(o);
-  }
-  els.racketSelect.value = state.activeId;
-}
-
 function renderTapDots() {
-  const n = state.settings.taps;
+  // An empty extra dot means the taps disagreed and one more is needed.
+  const need = state.settings.taps;
+  const n = !setDone && tapFreqs.length >= need ? tapFreqs.length + 1 : need;
   els.taps.innerHTML = '';
   for (let i = 0; i < n; i++) {
     const d = document.createElement('span');
@@ -399,20 +531,25 @@ function renderTapDots() {
 }
 
 function renderReading() {
+  renderStage();
   const r = activeRacket();
   const strung = `${fmt(r.strungKg)} ${state.unit}`;
   els.alert.hidden = true;
   els.alert.className = 'alert';
+  els.calPrompt.hidden = !r.calPrompt;
+  els.calPromptText.textContent = `Just restrung? Tap the centre ${state.settings.taps} time${state.settings.taps === 1 ? '' : 's'} and the app will calibrate this racket to ${strung}.`;
   if (lastFreq == null) {
     els.tension.textContent = '--';
     els.freq.textContent = '-- Hz';
     els.loss.textContent = `Strung at ${strung}`;
+    els.confidence.textContent = '';
     els.save.disabled = true;
     els.calibrate.disabled = true;
     return;
   }
   const kg = tensionKg(lastFreq, r);
   els.tension.textContent = fmt(kg);
+  renderConfidence(r);
   els.freq.textContent = `${Math.round(lastFreq)} Hz`;
   const lossPct = ((r.strungKg - kg) / r.strungKg) * 100;
   els.loss.textContent = lossPct >= 0
@@ -501,78 +638,173 @@ function racketReadings(r) {
   return state.readings.filter(x => x.racketId === r.id).sort((a, b) => a.t - b.t);
 }
 
+/* ---------- Restrings and history ---------- */
+
+const DAY_MS = 86400000;
+
+function dayStart(date) {
+  return new Date(date + 'T00:00').getTime();
+}
+
+function daysSince(date, t = Date.now()) {
+  return Math.floor((t - dayStart(date)) / DAY_MS);
+}
+
+function agoText(date) {
+  const d = daysSince(date);
+  if (d < 0) return '';
+  return d === 0 ? 'today' : d === 1 ? 'yesterday' : `${d} days ago`;
+}
+
+// Keep one entry per stringing date, so the history can mark each restring.
+function recordStringing(r, date, kg) {
+  if (!date) return;
+  const same = r.stringings.find(x => x.date === date);
+  if (same) same.kg = kg;
+  else r.stringings.push({ date, kg });
+  r.stringings.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+}
+
+// The stringing a moment in time belonged to (the latest one on or before it).
+function stringingAt(r, t) {
+  let found = null;
+  for (const x of r.stringings) if (dayStart(x.date) <= t) found = x;
+  return found || (r.strungDate ? { date: r.strungDate, kg: r.strungKg } : null);
+}
+
+function currentStringing(r) {
+  return r.strungDate ? { date: r.strungDate, kg: r.strungKg } : null;
+}
+
+// Half the spread of the taps' tensions: the ± shown next to a reading.
+function spreadKg(freqs, r) {
+  if (!freqs || freqs.length < 2) return null;
+  const t = freqs.map(f => tensionKg(f, r));
+  return (Math.max(...t) - Math.min(...t)) / 2;
+}
+
+function pmText(freqs, r) {
+  const pm = spreadKg(freqs, r);
+  return pm == null ? '' : `±${Math.max(toUnit(pm), 0.1).toFixed(1)}`;
+}
+
+function shortDate(t) {
+  return new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+}
+
 function drawHistory() {
   const r = activeRacket();
-  const items = racketReadings(r);
-  const { ctx, w, h } = sizeCanvas(els.history, 170);
+  const view = state.historyView;
+  document.querySelectorAll('[data-view]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.view === view)));
+  const all = racketReadings(r);
+  const cur = currentStringing(r);
+  const since = cur ? dayStart(cur.date) : -Infinity;
+  const items = view === 'current' ? all.filter(x => x.t >= since) : all;
+
+  const { ctx, w, h } = sizeCanvas(els.history, 180);
   ctx.clearRect(0, 0, w, h);
-  const pad = { l: 36, r: 10, t: 10, b: 20 };
-  const strung = toUnit(r.strungKg);
-  const alertLine = strung * (1 - r.alertPct / 100);
+  const pad = { l: 36, r: 10, t: 14, b: 22 };
+
+  // Each stringing is a segment with its own strung and restring lines.
+  const stringings = view === 'current'
+    ? (cur ? [cur] : [])
+    : (r.stringings.length ? r.stringings : (cur ? [cur] : []));
+  let x0 = view === 'current' && cur ? since : Math.min(...stringings.map(x => dayStart(x.date)), ...items.map(x => x.t), Date.now());
+  let x1 = Math.max(Date.now(), ...items.map(x => x.t));
+  if (x1 - x0 < 7 * DAY_MS) x1 = x0 + 7 * DAY_MS;
+  const segs = stringings.map((st, i) => ({
+    st,
+    from: Math.max(x0, dayStart(st.date)),
+    to: i + 1 < stringings.length ? dayStart(stringings[i + 1].date) : x1,
+  }));
+
   const values = items.map(x => toUnit(tensionKg(x.freq, r)));
-  const minV = Math.min(alertLine, ...values) - 1;
-  const maxV = Math.max(strung, ...values) + 1;
+  const lines = segs.flatMap(sg => [toUnit(sg.st.kg), toUnit(sg.st.kg) * (1 - r.alertPct / 100)]);
+  const minV = Math.min(...lines, ...values, 99) - 1;
+  const maxV = Math.max(...lines, ...values, 0) + 1;
   const y = v => pad.t + (1 - (v - minV) / (maxV - minV)) * (h - pad.t - pad.b);
-  const t0 = items.length ? items[0].t : Date.now();
-  const t1 = items.length > 1 ? items[items.length - 1].t : t0 + 1;
-  const x = t => items.length > 1 ? pad.l + ((t - t0) / (t1 - t0)) * (w - pad.l - pad.r) : (pad.l + w - pad.r) / 2;
+  const x = t => pad.l + ((t - x0) / (x1 - x0)) * (w - pad.l - pad.r);
 
   ctx.font = '11px system-ui, sans-serif';
   ctx.fillStyle = cssVar('--muted');
   ctx.textAlign = 'right';
-  for (const v of [minV + 1, (minV + maxV) / 2, maxV - 1]) {
-    ctx.fillText(v.toFixed(0), pad.l - 6, y(v) + 4);
+  for (const v of [minV + 1, (minV + maxV) / 2, maxV - 1]) ctx.fillText(v.toFixed(0), pad.l - 6, y(v) + 4);
+
+  // x-axis: days since restring, or dates for the full history.
+  ctx.textAlign = 'center';
+  if (view === 'current' && cur) {
+    const span = (x1 - x0) / DAY_MS;
+    const step = [1, 2, 7, 14, 30, 60, 90, 180].find(s => span / s <= 5) || 365;
+    for (let d = 0; d <= span; d += step) ctx.fillText(d === 0 ? 'day 0' : String(d), x(x0 + d * DAY_MS), h - 5);
+  } else {
+    for (let i = 0; i <= 3; i++) ctx.fillText(shortDate(x0 + ((x1 - x0) * i) / 3), pad.l + 14 + ((w - pad.l - pad.r - 28) * i) / 3, h - 5);
   }
 
-  const hline = (v, color, label) => {
+  const hline = (v, from, to, color, label) => {
     ctx.strokeStyle = color;
     ctx.setLineDash([5, 4]);
-    ctx.beginPath(); ctx.moveTo(pad.l, y(v)); ctx.lineTo(w - pad.r, y(v)); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x(from), y(v)); ctx.lineTo(x(to), y(v)); ctx.stroke();
     ctx.setLineDash([]);
-    ctx.fillStyle = color;
-    ctx.textAlign = 'left';
-    ctx.fillText(label, pad.l + 4, y(v) - 4);
+    if (label) {
+      ctx.fillStyle = color;
+      ctx.textAlign = 'left';
+      ctx.fillText(label, Math.min(x(from) + 4, w - pad.r - 50), y(v) - 4);
+    }
   };
-  hline(strung, cssVar('--muted'), 'strung');
-  hline(alertLine, cssVar('--warn'), 'restring');
+  segs.forEach((sg, i) => {
+    const last = i === segs.length - 1;
+    hline(toUnit(sg.st.kg), sg.from, sg.to, cssVar('--muted'), last ? 'strung' : '');
+    hline(toUnit(sg.st.kg) * (1 - r.alertPct / 100), sg.from, sg.to, cssVar('--warn'), last ? 'restring' : '');
+    if (view === 'all' && dayStart(sg.st.date) >= x0) {
+      ctx.strokeStyle = cssVar('--line');
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(x(sg.from), pad.t - 6); ctx.lineTo(x(sg.from), h - pad.b); ctx.stroke();
+      ctx.lineWidth = 1;
+    }
+  });
 
   if (items.length) {
     ctx.strokeStyle = cssVar('--accent');
     ctx.lineWidth = 2;
     ctx.beginPath();
+    let prevSeg = null;
     items.forEach((it, i) => {
+      const seg = stringingAt(r, it.t);
       const px = x(it.t), py = y(values[i]);
-      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      if (i === 0 || seg !== prevSeg) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      prevSeg = seg;
     });
     ctx.stroke();
+    ctx.lineWidth = 1;
     ctx.fillStyle = cssVar('--accent');
-    items.forEach((it, i) => {
-      ctx.beginPath(); ctx.arc(x(it.t), y(values[i]), 3.5, 0, Math.PI * 2); ctx.fill();
-    });
+    items.forEach((it, i) => { ctx.beginPath(); ctx.arc(x(it.t), y(values[i]), 3.5, 0, Math.PI * 2); ctx.fill(); });
   }
 
-  if (r.strungDate) {
-    const days = Math.floor((Date.now() - new Date(r.strungDate + 'T00:00').getTime()) / 86400000);
-    els.historyNote.textContent = days >= 0 ? `Strung ${days === 0 ? 'today' : days + ' day' + (days === 1 ? '' : 's') + ' ago'}` : '';
-  } else {
-    els.historyNote.textContent = '';
-  }
+  els.historyNote.textContent = view === 'current'
+    ? (cur ? `Strung ${agoText(cur.date)} at ${fmt(cur.kg)} ${state.unit}` : '')
+    : `${all.length} reading${all.length === 1 ? '' : 's'} · ${Math.max(1, r.stringings.length)} stringing${r.stringings.length > 1 ? 's' : ''}`;
 
   els.historyList.innerHTML = '';
   if (!items.length) {
     const li = document.createElement('li');
     li.className = 'muted';
-    li.textContent = 'No saved readings yet.';
+    li.textContent = all.length ? 'No readings since this restring yet.' : 'No saved readings yet.';
     els.historyList.appendChild(li);
   }
+  let segShown = null;
   for (const it of [...items].reverse()) {
+    const seg = stringingAt(r, it.t);
+    if (view === 'all' && segShown && seg !== segShown) addRestringRow(segShown);
+    segShown = seg;
     const li = document.createElement('li');
-    const when = new Date(it.t).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
     const val = document.createElement('b');
-    val.textContent = `${fmt(tensionKg(it.freq, r))} ${state.unit}`;
+    const pm = pmText(it.freqs, r);
+    val.textContent = `${fmt(tensionKg(it.freq, r))}${pm ? ' ' + pm : ''} ${state.unit}`;
     const meta = document.createElement('span');
     meta.className = 'muted';
-    meta.textContent = `${when} · ${Math.round(it.freq)} Hz`;
+    const when = new Date(it.t).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+    const day = seg ? ` · day ${daysSince(seg.date, it.t)}` : '';
+    meta.textContent = `${when}${day} · ${Math.round(it.freq)} Hz`;
     const del = document.createElement('button');
     del.type = 'button';
     del.className = 'ghost tiny';
@@ -582,29 +814,158 @@ function drawHistory() {
       state.readings = state.readings.filter(x => x.id !== it.id);
       saveState();
       drawHistory();
+      renderRacketCards();
     };
     li.append(val, meta, del);
     els.historyList.appendChild(li);
   }
+  if (view === 'all' && segShown) addRestringRow(segShown);
+}
+
+function addRestringRow(st) {
+  const li = document.createElement('li');
+  li.className = 'restring';
+  li.textContent = `Restrung at ${fmt(st.kg)} ${state.unit} · ${shortDate(dayStart(st.date))}`;
+  els.historyList.appendChild(li);
+}
+
+function csvCell(v) {
+  const s = String(v);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function historyCsv() {
+  const u = state.unit;
+  const rows = [['Racket', 'Date', 'Time', 'Days since restring', `Tension (${u})`, `Plus/minus (${u})`, 'Pitch (Hz)', `Strung at (${u})`, 'Below strung (%)']];
+  for (const r of state.rackets) {
+    for (const it of racketReadings(r)) {
+      const st = stringingAt(r, it.t);
+      const kg = tensionKg(it.freq, r);
+      const d = new Date(it.t);
+      const pm = spreadKg(it.freqs, r);
+      rows.push([
+        r.name,
+        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`,
+        d.toTimeString().slice(0, 5),
+        st ? daysSince(st.date, it.t) : '',
+        toUnit(kg).toFixed(1),
+        pm == null ? '' : toUnit(pm).toFixed(1),
+        Math.round(it.freq),
+        st ? toUnit(st.kg).toFixed(1) : '',
+        st ? (((st.kg - kg) / st.kg) * 100).toFixed(1) : '',
+      ]);
+    }
+  }
+  return rows.map(row => row.map(csvCell).join(',')).join('\n') + '\n';
 }
 
 function shortName(p) {
   return p.name.slice(p.brand.length + 1);
 }
 
-function renderRacketInfo() {
-  const r = activeRacket();
+/* ---------- Racket cards (swipe between rackets) ---------- */
+
+function racketSummary(r) {
   const m = racketPreset(r.model);
   const s = stringPreset(r.string);
-  const model = m ? m.name : `Custom ${r.lengthMm}×${r.widthMm} mm head`;
-  const string = s ? `${s.name} ${s.gaugeLabel}` : `${r.gaugeMm} mm string`;
-  $('racketInfo').textContent = `${model} · ${string}${r.cal !== 1 ? ' · calibrated' : ''}`;
+  const model = m ? shortName(m) : `${r.lengthMm}×${r.widthMm} mm head`;
+  const string = s ? shortName(s) : `${r.gaugeMm} mm string`;
+  return `${model} · ${string}`;
 }
+
+function renderRacketCards() {
+  const box = els.racketCards;
+  box.innerHTML = '';
+  for (const r of state.rackets) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'racket-card';
+    b.dataset.id = r.id;
+    b.setAttribute('aria-pressed', String(r.id === state.activeId));
+    const name = document.createElement('span');
+    name.className = 'rc-name';
+    name.textContent = r.name;
+    const meta = document.createElement('span');
+    meta.className = 'rc-meta';
+    meta.textContent = racketSummary(r);
+    const last = racketReadings(r).pop();
+    const line = document.createElement('span');
+    line.className = 'rc-last';
+    if (last) {
+      const v = document.createElement('b');
+      v.textContent = `${fmt(tensionKg(last.freq, r))} ${state.unit}`;
+      line.append(v, ` · ${agoText(new Date(last.t).toISOString().slice(0, 10)) || shortDate(last.t)}`);
+    } else {
+      line.textContent = 'No readings yet';
+    }
+    const tags = document.createElement('span');
+    tags.className = 'rc-meta';
+    tags.textContent = `${r.strungDate ? `Strung ${agoText(r.strungDate)} · ` : ''}${r.cal !== 1 ? 'calibrated' : 'not calibrated'}`;
+    b.append(name, meta, line, tags);
+    b.onclick = () => {
+      if (r.id !== state.activeId) selectRacket(r.id);
+      scrollToCard(b, true);
+    };
+    box.appendChild(b);
+  }
+  const add = document.createElement('button');
+  add.type = 'button';
+  add.className = 'racket-card add';
+  add.id = 'addRacket';
+  add.textContent = '+ New racket';
+  add.onclick = () => openRacketDialog(newRacket(`Racket ${state.rackets.length + 1}`), true);
+  box.appendChild(add);
+
+  els.pager.innerHTML = '';
+  if (state.rackets.length > 1) {
+    for (const r of state.rackets) {
+      const i = document.createElement('i');
+      if (r.id === state.activeId) i.className = 'on';
+      els.pager.appendChild(i);
+    }
+  }
+  const active = box.querySelector('[aria-pressed="true"]');
+  if (active) scrollToCard(active, false);
+}
+
+function scrollToCard(card, smooth) {
+  const box = els.racketCards;
+  const left = card.offsetLeft - (box.clientWidth - card.offsetWidth) / 2;
+  box.scrollTo({ left, behavior: smooth ? 'smooth' : 'auto' });
+}
+
+function selectRacket(id) {
+  state.activeId = id;
+  tapFreqs = [];
+  lastSet = [];
+  lastFreq = null;
+  setDone = false;
+  els.peak.textContent = '';
+  if (scene3d) scene3d.reset();
+  saveState();
+  renderAll();
+  setStatus(listener && listener.running ? `Measuring ${activeRacket().name}. Tap the centre of the strings.` : `Switched to ${activeRacket().name}.`);
+}
+
+// When a swipe settles, the card nearest the middle becomes the active racket.
+let swipeTimer = 0;
+els.racketCards.addEventListener('scroll', () => {
+  clearTimeout(swipeTimer);
+  swipeTimer = setTimeout(() => {
+    const box = els.racketCards;
+    const mid = box.scrollLeft + box.clientWidth / 2;
+    let best = null, dist = Infinity;
+    for (const c of box.querySelectorAll('.racket-card[data-id]')) {
+      const d = Math.abs(c.offsetLeft + c.offsetWidth / 2 - mid);
+      if (d < dist) { dist = d; best = c; }
+    }
+    if (best && best.dataset.id !== state.activeId) selectRacket(best.dataset.id);
+  }, 140);
+}, { passive: true });
 
 function renderAll() {
   renderUnits();
-  renderRacketSelect();
-  renderRacketInfo();
+  renderRacketCards();
   renderTapDots();
   renderReading();
   drawSpectrum();
@@ -618,64 +979,176 @@ function flashTap() {
   card.classList.remove('hit');
   void card.offsetWidth; // restart the animation
   card.classList.add('hit');
+  if (scene3d) scene3d.tap();
 }
 
-// Every tap updates the reading straight away; the median of the set
-// settles it, then the next tap starts a fresh set.
-function handleTap({ freq, snrDb }) {
-  if (snrDb < 8) {
-    setStatus('Heard a tap but no clear ring. Flick the centre of the strings, not the frame.');
+// The n taps that agree best (the tightest run once sorted).
+function bestCluster(freqs, n) {
+  const sorted = [...freqs].sort((a, b) => a - b);
+  let best = sorted.slice(0, n);
+  for (let i = 1; i + n <= sorted.length; i++) {
+    const c = sorted.slice(i, i + n);
+    if (c[n - 1] - c[0] < best[n - 1] - best[0]) best = c;
+  }
+  return best;
+}
+
+function renderConfidence(r) {
+  const need = state.settings.taps;
+  els.confidence.className = 'confidence';
+  if (!setDone) {
+    els.confidence.textContent = tapFreqs.length >= need
+      ? 'Taps disagree, so one more tap is needed'
+      : `${tapFreqs.length} of ${need} taps`;
+    if (tapFreqs.length >= need) els.confidence.classList.add('rough');
     return;
   }
+  const pm = spreadKg(lastSet, r);
+  if (pm == null) {
+    els.confidence.textContent = 'Single tap';
+    return;
+  }
+  const rough = pm * 2 > MAX_SPREAD_KG;
+  els.confidence.textContent = `${pmText(lastSet, r)} ${state.unit} · ${rough ? 'taps vary, so treat this as rough' : `${lastSet.length} taps agree`}`;
+  if (rough) els.confidence.classList.add('rough');
+}
+
+// Explain why a tap didn't count, so the next one does.
+function coachFailedTap({ freq, loudness }) {
+  if (freq == null) {
+    setStatus('Heard a knock but no string ring. Flick the centre of the strings, not the frame.', 'tip');
+  } else if (loudness != null && loudness < 2.5) {
+    setStatus('Too quiet to read. Hold the phone 5–20 cm from the strings, or flick a little harder.', 'tip');
+  } else {
+    setStatus('That sounded like the frame or a knock, not the strings. Flick the centre of the strings.', 'tip');
+  }
+}
+
+// Each tap updates the reading straight away. Once enough agree, the set is
+// confirmed; if they disagree, the app asks for up to two more and keeps the
+// taps that agree best. The next tap after that starts a new measurement.
+function handleTap(result) {
+  lastTapAt = performance.now();
+  noisyWarned = false;
+  const { freq, snrDb, clipped } = result;
+  if (freq == null || snrDb < MIN_SNR_DB) {
+    if (scene3d) scene3d.classify({ kind: 'dud' });
+    coachFailedTap(result);
+    return;
+  }
+  if (setDone) {
+    tapFreqs = [];
+    setDone = false;
+    if (scene3d) scene3d.setResult(null);
+  }
+  // A tap that mostly rang the second mode reads ~1.5-1.7x the others.
+  if (tapFreqs.length) {
+    const ratio = freq / median(tapFreqs);
+    if (ratio > 1.45 && ratio < 1.75) {
+      if (scene3d) scene3d.classify({ kind: 'overtone', freq });
+      setStatus('That tap rang an overtone, so it was skipped. Tap the exact centre again.', 'tip');
+      return;
+    }
+    if (ratio > 1 / 1.75 && ratio < 1 / 1.45) tapFreqs = []; // earlier taps were the overtones
+  }
+  const r = activeRacket();
   const need = state.settings.taps;
-  if (tapFreqs.length >= need) tapFreqs = [];
   tapFreqs.push(freq);
+  if (scene3d) scene3d.classify({ kind: 'ok', freq });
+  lastSet = tapFreqs.length > need ? bestCluster(tapFreqs, need) : [...tapFreqs];
+  lastFreq = median(lastSet);
   els.peak.textContent = `last tap ${Math.round(freq)} Hz`;
-  lastFreq = median(tapFreqs);
-  renderTapDots();
-  renderReading();
-  if (!listener || !listener.running) drawSpectrum();
+  const loud = clipped ? ' That was very loud, so hold the phone a little further away.' : '';
 
   if (tapFreqs.length < need) {
+    renderTapDots();
+    renderReading();
+    if (!listener || !listener.running) drawSpectrum();
     const left = need - tapFreqs.length;
-    setStatus(`Tap ${tapFreqs.length} heard. ${left} more to confirm…`);
+    setStatus(`Tap ${tapFreqs.length} heard. ${left} more to confirm…${loud}`, clipped ? 'tip' : '');
     return;
   }
-  const spread = (Math.max(...tapFreqs) - Math.min(...tapFreqs)) / lastFreq;
-  setStatus(spread > 0.06
-    ? 'Taps were inconsistent, so this reading may be off. Keep tapping the centre to measure again.'
-    : 'Reading confirmed. Save it, or tap again to start a new measurement.');
+
+  const range = need > 1 ? spreadKg(lastSet, r) * 2 : 0;
+  if (range > MAX_SPREAD_KG && tapFreqs.length < need + EXTRA_TAPS) {
+    renderTapDots();
+    renderReading();
+    const t = lastSet.map(f => tensionKg(f, r));
+    setStatus(`Taps disagree (${fmt(Math.min(...t))}–${fmt(Math.max(...t))} ${state.unit}). Tap the exact centre once more.`, 'tip');
+    return;
+  }
+
+  setDone = true;
+  renderTapDots();
+  renderReading();
+  sceneResult();
+  if (!listener || !listener.running) drawSpectrum();
+  if (range > MAX_SPREAD_KG) {
+    setStatus('Your taps still vary, so this reading is rough. Tap exactly in the centre, the same way each time, and measure again.', 'tip');
+    return;
+  }
+  setStatus(`Reading confirmed. Save it, or tap again to start a new measurement.${loud}`, clipped ? 'tip' : '');
+  if (r.calPrompt) openCalDialog(true);
+}
+
+// While listening, warn once if the room is loud enough to spoil taps.
+function checkNoise() {
+  if (!listener || !listener.running) return;
+  const quietFor = performance.now() - lastTapAt;
+  if (listener.noise > NOISY_LEVEL && quietFor > 3000 && !noisyWarned) {
+    noisyWarned = true;
+    setStatus('It’s noisy here, so taps may be missed or misread. Find a quieter spot, or hold the phone closer to the strings.', 'tip');
+  } else if (listener.noise < NOISY_LEVEL * 0.5 && noisyWarned && quietFor > 3000) {
+    noisyWarned = false;
+    setStatus('Quieter now. Tap the centre of the strings.');
+  }
 }
 
 async function toggleListening() {
   if (listener && listener.running) {
     listener.stop();
+    clearInterval(noiseTimer);
+    if (scene3d) scene3d.setListening(false);
+    keepAwake(false);
     cancelAnimationFrame(spectrumFrame);
     els.listen.textContent = 'Start listening';
     els.listen.classList.remove('live');
     els.level.style.width = '0';
     setStatus(lastFreq != null ? 'Stopped. Your last reading is shown above.' : 'Stopped.');
+    renderStage();
     return;
   }
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    setStatus('This browser can’t use the microphone here. Open the app over https in Safari or Chrome.');
+    setStatus(NATIVE
+      ? 'This phone’s web view can’t use the microphone. Update Android System WebView (or iOS) and try again.'
+      : 'This browser can’t use the microphone here. Open the app over https in Safari or Chrome.');
     return;
   }
   tapFreqs = [];
+  setDone = false;
+  noisyWarned = false;
+  lastTapAt = performance.now();
   renderTapDots();
   listener = new TapListener(handleTap, rms => {
     els.level.style.width = Math.min(100, Math.sqrt(rms) * 250) + '%';
+    if (scene3d) scene3d.setLevel(rms);
   }, flashTap);
   try {
     await listener.start();
   } catch (e) {
     setStatus(e && e.name === 'NotAllowedError'
-      ? 'Microphone access was blocked. Allow it in your browser settings, then try again.'
+      ? (NATIVE
+        ? 'Microphone access was blocked. Allow it for Baddy Tension in your phone’s Settings → Apps → Permissions, then try again.'
+        : 'Microphone access was blocked. Allow it in your browser settings, then try again.')
       : 'Couldn’t start the microphone: ' + (e && e.message ? e.message : e));
     return;
   }
   els.listen.textContent = 'Stop';
   els.listen.classList.add('live');
+  keepAwake(true);
+  noiseTimer = setInterval(checkNoise, 1000);
+  if (scene3d) scene3d.setListening(true);
+  renderStage();
   setStatus(`Listening… tap the centre of the strings ${state.settings.taps} time${state.settings.taps === 1 ? '' : 's'}.`);
   drawSpectrum();
 }
@@ -769,10 +1242,12 @@ racketDialog.addEventListener('close', () => {
   if (racketDialog.returnValue !== 'save') return;
   const f = racketForm.elements;
   let r = editingId ? state.rackets.find(x => x.id === editingId) : null;
+  const isNew = !r;
   if (!r) {
     r = newRacket('');
     state.rackets.push(r);
   }
+  const prevDate = r.strungDate, prevKg = r.strungKg;
   const geometryChanged = r.lengthMm !== +f.lengthMm.value || r.widthMm !== +f.widthMm.value || r.gaugeMm !== +f.gaugeMm.value;
   r.name = f.name.value.trim() || 'Racket';
   r.model = f.model.value;
@@ -784,7 +1259,17 @@ racketDialog.addEventListener('close', () => {
   r.strungDate = f.strungDate.value;
   r.alertPct = +f.alertPct.value;
   if (geometryChanged && editingId) r.cal = 1; // old calibration was for different geometry
-  state.activeId = r.id;
+  const restrung = isNew || r.strungDate !== prevDate || Math.abs(r.strungKg - prevKg) > 0.05;
+  if (restrung) recordStringing(r, r.strungDate, r.strungKg);
+  // Strung today: the best moment to calibrate, so offer it.
+  if (restrung && r.strungDate === today()) r.calPrompt = true;
+  setStatus(r.calPrompt
+    ? `${r.name} saved. Tap the centre ${state.settings.taps} times to calibrate it.`
+    : `${r.name} saved.`);
+  if (state.activeId !== r.id) {
+    state.activeId = r.id;
+    tapFreqs = []; lastSet = []; lastFreq = null; setDone = false;
+  }
   saveState();
   renderAll();
 });
@@ -805,22 +1290,39 @@ $('deleteRacket').onclick = () => {
 const calDialog = $('calDialog');
 const calForm = $('calForm');
 
-els.calibrate.onclick = () => {
+let calFromPrompt = false;
+
+function openCalDialog(fromPrompt) {
+  if (lastFreq == null || calDialog.open) return;
   const r = activeRacket();
+  calFromPrompt = fromPrompt;
   $('calFreq').textContent = `${Math.round(lastFreq)} Hz`;
   calForm.elements.known.value = toUnit(r.strungKg).toFixed(1);
+  calForm.elements.resetDate.checked = !fromPrompt || r.strungDate !== today();
   calDialog.returnValue = '';
   calDialog.showModal();
-};
+}
+
+els.calibrate.onclick = () => openCalDialog(false);
 
 calDialog.addEventListener('close', () => {
-  if (calDialog.returnValue !== 'save' || lastFreq == null) return;
   const r = activeRacket();
+  if (calDialog.returnValue !== 'save' || lastFreq == null) {
+    if (calFromPrompt && calDialog.returnValue === 'cancel') {
+      r.calPrompt = false;
+      saveState();
+      renderReading();
+      setStatus('Skipped calibration. You can use Calibrate… any time.');
+    }
+    return;
+  }
   const knownKg = fromUnit(+calForm.elements.known.value);
   r.cal = knownKg / uncalibratedTensionKg(lastFreq, r);
+  r.calPrompt = false;
   if (calForm.elements.resetDate.checked) {
     r.strungKg = knownKg;
     r.strungDate = today();
+    recordStringing(r, r.strungDate, r.strungKg);
   }
   saveState();
   renderAll();
@@ -841,20 +1343,24 @@ els.listen.onclick = toggleListening;
 
 els.save.onclick = () => {
   if (lastFreq == null) return;
-  state.readings.push({ id: uid(), racketId: state.activeId, t: Date.now(), freq: lastFreq });
+  state.readings.push({ id: uid(), racketId: state.activeId, t: Date.now(), freq: lastFreq, freqs: [...lastSet] });
   saveState();
   drawHistory();
+  renderRacketCards();
   setStatus('Saved to history.');
 };
 
-els.racketSelect.onchange = () => {
-  state.activeId = els.racketSelect.value;
+$('editRacket').onclick = () => openRacketDialog(activeRacket(), false);
+
+$('calPromptDismiss').onclick = () => {
+  activeRacket().calPrompt = false;
   saveState();
-  renderAll();
+  renderReading();
 };
 
-$('editRacket').onclick = () => openRacketDialog(activeRacket(), false);
-$('addRacket').onclick = () => openRacketDialog(newRacket(`Racket ${state.rackets.length + 1}`), true);
+document.querySelectorAll('[data-view]').forEach(b => {
+  b.onclick = () => { state.historyView = b.dataset.view; saveState(); drawHistory(); };
+});
 
 document.querySelectorAll('[data-unit]').forEach(b => {
   b.onclick = () => { state.unit = b.dataset.unit; saveState(); renderAll(); };
@@ -871,19 +1377,36 @@ for (const [id, key] of Object.entries(settingInputs)) {
     if (state.settings.fmax <= state.settings.fmin + 100) state.settings.fmax = state.settings.fmin + 100;
     $('setFmax').value = state.settings.fmax;
     tapFreqs = [];
+    setDone = false;
     saveState();
     renderAll();
   };
 }
 
-$('exportBtn').onclick = () => {
-  const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+async function saveFile(name, text, type, title) {
+  if (NATIVE) {
+    // App webviews can't download files, so save it and open the share sheet
+    // (Drive, email, Files…).
+    try {
+      const { uri } = await nativeCall('Filesystem', 'writeFile', {
+        path: name, data: text, directory: 'CACHE', encoding: 'utf8',
+      });
+      await nativeCall('Share', 'share', { title, files: [uri] });
+    } catch (err) {
+      if (!/cancel/i.test(String(err && err.message))) setStatus('Couldn’t export: ' + (err && err.message ? err.message : err));
+    }
+    return;
+  }
+  const blob = new Blob([text], { type });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `baddy-tension-${today()}.json`;
+  a.download = name;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-};
+}
+
+$('exportBtn').onclick = () => saveFile(`baddy-tension-${today()}.json`, JSON.stringify(state, null, 2), 'application/json', 'Baddy Tension backup');
+$('csvBtn').onclick = () => saveFile(`baddy-tension-history-${today()}.csv`, historyCsv(), 'text/csv', 'Baddy Tension history');
 
 $('importBtn').onclick = () => $('importFile').click();
 $('importFile').onchange = async e => {
@@ -903,9 +1426,11 @@ $('importFile').onchange = async e => {
 };
 
 window.addEventListener('resize', () => { drawSpectrum(); drawHistory(); });
+$('spectrumCard').addEventListener('toggle', drawSpectrum);
 window.matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', renderAll);
 
-if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+// The phone app ships its files inside the app, so it needs no offline cache.
+if (!NATIVE && 'serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 
@@ -923,6 +1448,8 @@ window.simulateTap = (freq, sampleRate = 48000) => {
       + 0.01 * (Math.random() * 2 - 1);
   }
   const result = analyzeTap(s, sampleRate, state.settings.fmin, state.settings.fmax);
-  if (result) handleTap(result);
+  result.loudness = 10;
+  if (scene3d) scene3d.tap();
+  handleTap(result);
   return result;
 };

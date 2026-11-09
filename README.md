@@ -4,22 +4,43 @@ A phone web app that listens to you tap your badminton strings and estimates the
 
 ## Put it on your phone
 
-Phones only allow microphone access over **https**, so the app needs hosting. Both options below are free:
+### Android app (APK)
+Every push to the default branch builds the app with GitHub Actions (`.github/workflows/android.yml`) and publishes it as a release.
 
-**Netlify Drop (quickest, no git needed)**
-1. Go to https://app.netlify.com/drop on your PC.
-2. Drag this whole `BaddyApp` folder onto the page.
-3. Open the `https://….netlify.app` link it gives you on your phone.
-4. Add it to your home screen: Share → *Add to Home Screen* on iPhone (Safari), or ⋮ → *Install app* on Android (Chrome).
+1. On your Android phone, open
+   **https://github.com/rayxd/baddy-tension/releases/latest/download/baddy-tension.apk**
+2. Open the downloaded file. If Android asks, allow your browser to *install unknown apps*.
+3. Open **Baddy Tension** and allow the microphone when asked.
 
-**GitHub Pages**: push the folder to a GitHub repo, then turn on Settings → Pages → "Deploy from branch".
+New builds install over the old one and keep your rackets and history, because the APK is always signed with the same key (`android/app/debug.keystore`). This is a debug key, which is fine for installing it yourself. For the Play Store you would need your own release key.
 
-## Run it locally (PC only)
+Builds from other branches skip the release: get the APK from the run's **Artifacts** on the Actions tab.
+
+### iPhone app
+This needs a Mac with Xcode (a free Apple ID works for your own phone, but the app expires after 7 days; a paid developer account removes that limit).
 
 ```
-node serve.js
+npm install
+npm run ios        # copies the web app in and opens Xcode
 ```
-Then open http://localhost:8080. A PC microphone works on localhost.
+In Xcode pick your phone as the target, set your team under *Signing & Capabilities*, then press Run.
+
+### Web app (any phone, no install)
+Phones only allow microphone access over **https**, so the web version needs hosting. Turn on GitHub Pages (Settings → Pages → "Deploy from branch"), or drag the folder onto https://app.netlify.com/drop. Open the link on your phone and add it to your home screen.
+
+## Developing
+
+The web app (`index.html`, `app.js`, `scene3d.js`, `style.css`) is the whole app. `scene3d.js` draws the 3D racket with [three.js](https://threejs.org) (r160, MIT, bundled in `vendor/` so it works offline). Real taps drive it: each tap rings the strings and sends a wave across the screen, rejected taps fade out grey or orange, and a confirmed reading turns the racket to face you. With Reduce Motion on, or without WebGL, the app shows its flat layout instead. The `android/` and `ios/` folders are [Capacitor](https://capacitorjs.com) shells that bundle it.
+
+```
+npm install
+node serve.js       # try it on your PC at http://localhost:8080
+npm run sync        # copy web changes into android/ and ios/
+npm run android     # open in Android Studio to run on a plugged-in phone
+```
+After changing `assets/icon-*.png` or the splash images, run `npx capacitor-assets generate --android --ios`.
+
+Inside the phone app, **Export backup** opens the share sheet (save to Drive, Files, email…), and the screen stays awake while it's listening.
 
 ## Using it
 1. Set up your racket (**Edit**): string bed size, string gauge, and the tension it was strung at.
@@ -28,6 +49,17 @@ Then open http://localhost:8080. A PC microphone works on localhost.
 4. **Save reading** to track tension loss over time. The app warns you once the loss passes your restring threshold.
 
 ## How it works
-The string bed is modelled as a drum membrane. Its pitch is f = 2.405·c / (2πR), where the wave speed is c = √(T / 2μ), T is the string tension, μ is the string's mass per metre (from the gauge), and R is the radius of a circle with the same area as the head. A 0.8 empirical factor accounts for frame flex and air loading. Calibration then scales the result for each racket. Pitch is found with a 32k-point FFT over 150 ms just after each tap, with parabolic peak interpolation, and the reading is the median of several taps.
+The string bed is modelled as a drum membrane. Its pitch is f = 2.405·c / (2πR), where the wave speed is c = √(T / 2μ), T is the string tension, μ is the string's mass per metre (from the gauge), and R is the radius of a circle with the same area as the head. That sets the tension at 1200 Hz for your racket and string. Away from 1200 Hz, tension follows pitch^1.47 instead of the ideal pitch², because real frames give a little more at higher tension. Calibration then scales the result for each racket.
+
+The 0.88 frame factor and the 1.47 exponent were fitted to a reference recording of one racket strung at four tensions. The fit is within 0.3 lbs at every point:
+
+| Strung at | Pitch | App reads |
+|---|---|---|
+| 24 lbs | 1177 Hz | 24.0 lbs |
+| 26 lbs | 1237 Hz | 25.8 lbs |
+| 28 lbs | 1316 Hz | 28.3 lbs |
+| 30 lbs | 1362 Hz | 29.7 lbs |
+
+Pitch is found with a 32k-point FFT over 120 ms just after each tap, with parabolic peak interpolation. Only 600–1800 Hz is searched. The second ring mode (about 1.56× the fundamental) is often as loud as the fundamental, so the app takes the lowest clear peak within 12 dB of the loudest one. It also skips any tap that reads 1.45–1.75× the others. Sounds whose peak is under 20 dB above the background, such as talking, are ignored. The reading is the median of several taps.
 
 Data is stored only on your phone (localStorage). Use **Export backup** to keep a copy.
