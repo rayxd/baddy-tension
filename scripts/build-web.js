@@ -5,11 +5,14 @@ const path = require('path');
 const root = path.join(__dirname, '..');
 const out = path.join(root, 'www');
 const FILES = [
-  'index.html', 'app.js', 'style.css', 'sw.js', 'manifest.webmanifest',
-  'icon.svg', 'icon-192.png', 'icon-512.png',
+  'index.html', 'app.js', 'scene3d.js', 'style.css', 'sw.js', 'manifest.webmanifest',
+  'icon.svg', 'icon-192.png', 'icon-512.png', 'vendor/three.module.min.js',
 ];
 
 fs.rmSync(out, { recursive: true, force: true });
 fs.mkdirSync(out);
-for (const f of FILES) fs.copyFileSync(path.join(root, f), path.join(out, f));
+for (const f of FILES) {
+  fs.mkdirSync(path.dirname(path.join(out, f)), { recursive: true });
+  fs.copyFileSync(path.join(root, f), path.join(out, f));
+}
 console.log(`Copied ${FILES.length} files to www/`);

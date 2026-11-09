@@ -1,6 +1,6 @@
 // Network first so updates show up straight away; cached copy when offline at the court.
-const CACHE = 'baddy-tension-v3';
-const SHELL = ['./', 'index.html', 'app.js', 'style.css', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png'];
+const CACHE = 'baddy-tension-v4';
+const SHELL = ['./', 'index.html', 'app.js', 'scene3d.js', 'vendor/three.module.min.js', 'style.css', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));

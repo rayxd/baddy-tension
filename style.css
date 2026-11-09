@@ -162,6 +162,30 @@ details.sizes { margin: 4px 0 8px; }
 details.sizes > summary { font-size: 0.9rem; color: var(--muted); }
 
 .reading { text-align: center; display: grid; gap: 10px; }
+
+/* 3D racket stage. Always dark, like a court at night, in both themes. */
+.stage {
+  position: relative; height: clamp(250px, 42vh, 380px); border-radius: 20px; overflow: hidden;
+  background: radial-gradient(120% 90% at 50% 38%, #17293a 0%, #101b27 55%, #0a1219 100%);
+  border: 1px solid #1f2f40;
+}
+.stage[hidden] { display: none; }
+.stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.stage-pill {
+  position: absolute; top: 12px; left: 12px; display: inline-flex; align-items: center; gap: 6px;
+  font: 600 0.72rem/1 ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: 0.12em; text-transform: uppercase;
+  padding: 6px 10px; border-radius: 99px; background: #1b2a3a; color: #8b9bb0;
+}
+.stage-pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.stage-pill.live { color: #2fd59a; background: #12352a; }
+.stage-pill.live::before { animation: pulse 1.2s ease-in-out infinite; }
+.stage-pill.ok { color: #06140e; background: #2fd59a; }
+.stage-pill.warn { color: #1a0d00; background: #ff922b; }
+@keyframes pulse { 50% { opacity: 0.3; } }
+/* The reading card sits up over the bottom of the stage like a sheet. */
+.has-3d .stage + .reading { margin-top: -44px; position: relative; box-shadow: 0 -10px 30px -18px rgba(0, 0, 0, 0.6); }
+#spectrumCard summary { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+@media (prefers-reduced-motion: reduce) { .stage-pill.live::before { animation: none; } }
 .big { font-size: 4.2rem; font-weight: 700; line-height: 1; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; margin-top: 4px; }
 .big .unit { font-size: 1.3rem; font-weight: 600; color: var(--muted); margin-left: 6px; letter-spacing: 0; }
 .sub { color: var(--muted); font-variant-numeric: tabular-nums; }

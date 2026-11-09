@@ -456,6 +456,49 @@ let lastTapAt = 0;
 let noiseTimer = 0;
 let noisyWarned = false;
 let spectrumFrame = 0;
+let scene3d = null; // the 3D racket view, when the device supports it
+
+// scene3d.js loads after this file and calls this once its scene is ready.
+window.attachRacketScene = api => {
+  scene3d = api;
+  document.body.classList.add('has-3d');
+  if (listener && listener.running) api.setListening(true);
+  renderStage();
+};
+
+// The label over the 3D racket: what the app is doing right now.
+function renderStage() {
+  const pill = $('stagePill');
+  if (!pill) return;
+  const r = activeRacket();
+  let text = 'Ready', kind = '';
+  if (setDone && lastFreq != null) {
+    const rough = (spreadKg(lastSet, r) || 0) * 2 > MAX_SPREAD_KG;
+    const lossPct = ((r.strungKg - tensionKg(lastFreq, r)) / r.strungKg) * 100;
+    if (rough) { text = 'Rough reading'; kind = 'warn'; }
+    else if (lossPct >= r.alertPct) { text = 'Time to restring'; kind = 'warn'; }
+    else { text = 'Confirmed'; kind = 'ok'; }
+  } else if (tapFreqs.length) {
+    text = tapFreqs.length >= state.settings.taps ? 'One more tap' : 'Calculating';
+    kind = 'live';
+  } else if (listener && listener.running) {
+    text = 'Listening';
+    kind = 'live';
+  }
+  pill.textContent = text;
+  pill.className = `stage-pill ${kind}`;
+}
+
+function sceneResult() {
+  if (!scene3d) return;
+  const r = activeRacket();
+  if (!setDone || lastFreq == null || (spreadKg(lastSet, r) || 0) * 2 > MAX_SPREAD_KG) {
+    scene3d.setResult(null);
+    return;
+  }
+  const lossPct = ((r.strungKg - tensionKg(lastFreq, r)) / r.strungKg) * 100;
+  scene3d.setResult(lossPct >= r.alertPct ? 'warn' : 'ok');
+}
 
 function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -488,6 +531,7 @@ function renderTapDots() {
 }
 
 function renderReading() {
+  renderStage();
   const r = activeRacket();
   const strung = `${fmt(r.strungKg)} ${state.unit}`;
   els.alert.hidden = true;
@@ -897,6 +941,7 @@ function selectRacket(id) {
   lastFreq = null;
   setDone = false;
   els.peak.textContent = '';
+  if (scene3d) scene3d.reset();
   saveState();
   renderAll();
   setStatus(listener && listener.running ? `Measuring ${activeRacket().name}. Tap the centre of the strings.` : `Switched to ${activeRacket().name}.`);
@@ -934,6 +979,7 @@ function flashTap() {
   card.classList.remove('hit');
   void card.offsetWidth; // restart the animation
   card.classList.add('hit');
+  if (scene3d) scene3d.tap();
 }
 
 // The n taps that agree best (the tightest run once sorted).
@@ -986,14 +1032,20 @@ function handleTap(result) {
   noisyWarned = false;
   const { freq, snrDb, clipped } = result;
   if (freq == null || snrDb < MIN_SNR_DB) {
+    if (scene3d) scene3d.classify({ kind: 'dud' });
     coachFailedTap(result);
     return;
   }
-  if (setDone) { tapFreqs = []; setDone = false; }
+  if (setDone) {
+    tapFreqs = [];
+    setDone = false;
+    if (scene3d) scene3d.setResult(null);
+  }
   // A tap that mostly rang the second mode reads ~1.5-1.7x the others.
   if (tapFreqs.length) {
     const ratio = freq / median(tapFreqs);
     if (ratio > 1.45 && ratio < 1.75) {
+      if (scene3d) scene3d.classify({ kind: 'overtone', freq });
       setStatus('That tap rang an overtone, so it was skipped. Tap the exact centre again.', 'tip');
       return;
     }
@@ -1002,6 +1054,7 @@ function handleTap(result) {
   const r = activeRacket();
   const need = state.settings.taps;
   tapFreqs.push(freq);
+  if (scene3d) scene3d.classify({ kind: 'ok', freq });
   lastSet = tapFreqs.length > need ? bestCluster(tapFreqs, need) : [...tapFreqs];
   lastFreq = median(lastSet);
   els.peak.textContent = `last tap ${Math.round(freq)} Hz`;
@@ -1028,6 +1081,7 @@ function handleTap(result) {
   setDone = true;
   renderTapDots();
   renderReading();
+  sceneResult();
   if (!listener || !listener.running) drawSpectrum();
   if (range > MAX_SPREAD_KG) {
     setStatus('Your taps still vary, so this reading is rough. Tap exactly in the centre, the same way each time, and measure again.', 'tip');
@@ -1054,12 +1108,14 @@ async function toggleListening() {
   if (listener && listener.running) {
     listener.stop();
     clearInterval(noiseTimer);
+    if (scene3d) scene3d.setListening(false);
     keepAwake(false);
     cancelAnimationFrame(spectrumFrame);
     els.listen.textContent = 'Start listening';
     els.listen.classList.remove('live');
     els.level.style.width = '0';
     setStatus(lastFreq != null ? 'Stopped. Your last reading is shown above.' : 'Stopped.');
+    renderStage();
     return;
   }
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -1075,6 +1131,7 @@ async function toggleListening() {
   renderTapDots();
   listener = new TapListener(handleTap, rms => {
     els.level.style.width = Math.min(100, Math.sqrt(rms) * 250) + '%';
+    if (scene3d) scene3d.setLevel(rms);
   }, flashTap);
   try {
     await listener.start();
@@ -1090,6 +1147,8 @@ async function toggleListening() {
   els.listen.classList.add('live');
   keepAwake(true);
   noiseTimer = setInterval(checkNoise, 1000);
+  if (scene3d) scene3d.setListening(true);
+  renderStage();
   setStatus(`Listening… tap the centre of the strings ${state.settings.taps} time${state.settings.taps === 1 ? '' : 's'}.`);
   drawSpectrum();
 }
@@ -1367,6 +1426,7 @@ $('importFile').onchange = async e => {
 };
 
 window.addEventListener('resize', () => { drawSpectrum(); drawHistory(); });
+$('spectrumCard').addEventListener('toggle', drawSpectrum);
 window.matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', renderAll);
 
 // The phone app ships its files inside the app, so it needs no offline cache.
@@ -1389,6 +1449,7 @@ window.simulateTap = (freq, sampleRate = 48000) => {
   }
   const result = analyzeTap(s, sampleRate, state.settings.fmin, state.settings.fmax);
   result.loudness = 10;
+  if (scene3d) scene3d.tap();
   handleTap(result);
   return result;
 };

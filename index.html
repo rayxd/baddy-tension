@@ -31,6 +31,11 @@
     </div>
   </section>
 
+  <section class="stage" id="stage" aria-label="Racket view" hidden>
+    <canvas id="stageCanvas"></canvas>
+    <span class="stage-pill" id="stagePill">Ready</span>
+  </section>
+
   <section class="card reading">
     <div id="calPrompt" class="alert info cal-prompt" hidden>
       <p id="calPromptText"></p>
@@ -49,14 +54,11 @@
     </div>
   </section>
 
-  <section class="card">
-    <div class="card-head">
-      <h2>Sound spectrum</h2>
-      <span id="peakLabel" class="muted"></span>
-    </div>
+  <details class="card" id="spectrumCard">
+    <summary>Sound spectrum <span id="peakLabel" class="muted small"></span></summary>
     <canvas id="spectrum"></canvas>
     <div class="meter" title="Microphone level"><div id="level"></div></div>
-  </section>
+  </details>
 
   <section class="card">
     <div class="card-head">
@@ -151,5 +153,6 @@
 </dialog>
 
 <script src="app.js"></script>
+<script type="module" src="scene3d.js"></script>
 </body>
 </html>

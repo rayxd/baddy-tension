@@ -30,7 +30,7 @@ Phones only allow microphone access over **https**, so the web version needs hos
 
 ## Developing
 
-The web app (`index.html`, `app.js`, `style.css`) is the whole app. The `android/` and `ios/` folders are [Capacitor](https://capacitorjs.com) shells that bundle it.
+The web app (`index.html`, `app.js`, `scene3d.js`, `style.css`) is the whole app. `scene3d.js` draws the 3D racket with [three.js](https://threejs.org) (r160, MIT, bundled in `vendor/` so it works offline). Real taps drive it: each tap rings the strings and sends a wave across the screen, rejected taps fade out grey or orange, and a confirmed reading turns the racket to face you. With Reduce Motion on, or without WebGL, the app shows its flat layout instead. The `android/` and `ios/` folders are [Capacitor](https://capacitorjs.com) shells that bundle it.
 
 ```
 npm install
