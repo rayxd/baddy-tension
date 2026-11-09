@@ -345,6 +345,31 @@ class TapListener {
   }
 }
 
+/* ---------- Native app (Capacitor) ---------- */
+
+// When packaged as a phone app, Capacitor's bridge is on window. Plugins are
+// called straight through the bridge, so the web build needs no bundler.
+const NATIVE = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+
+function nativeCall(plugin, method, options = {}) {
+  return window.Capacitor.nativePromise(plugin, method, options);
+}
+
+// Stop the screen sleeping while you tap, or the mic goes quiet mid-reading.
+let wakeLock = null;
+async function keepAwake(on) {
+  try {
+    if (NATIVE) {
+      await nativeCall('KeepAwake', on ? 'keepAwake' : 'allowSleep');
+    } else if (on && 'wakeLock' in navigator) {
+      wakeLock = await navigator.wakeLock.request('screen');
+    } else if (!on && wakeLock) {
+      await wakeLock.release();
+      wakeLock = null;
+    }
+  } catch (e) { /* not supported; harmless */ }
+}
+
 /* ---------- UI ---------- */
 
 const $ = id => document.getElementById(id);
@@ -650,6 +675,7 @@ function handleTap({ freq, snrDb }) {
 async function toggleListening() {
   if (listener && listener.running) {
     listener.stop();
+    keepAwake(false);
     cancelAnimationFrame(spectrumFrame);
     els.listen.textContent = 'Start listening';
     els.listen.classList.remove('live');
@@ -658,7 +684,9 @@ async function toggleListening() {
     return;
   }
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    setStatus('This browser can’t use the microphone here. Open the app over https in Safari or Chrome.');
+    setStatus(NATIVE
+      ? 'This phone’s web view can’t use the microphone. Update Android System WebView (or iOS) and try again.'
+      : 'This browser can’t use the microphone here. Open the app over https in Safari or Chrome.');
     return;
   }
   tapFreqs = [];
@@ -670,12 +698,15 @@ async function toggleListening() {
     await listener.start();
   } catch (e) {
     setStatus(e && e.name === 'NotAllowedError'
-      ? 'Microphone access was blocked. Allow it in your browser settings, then try again.'
+      ? (NATIVE
+        ? 'Microphone access was blocked. Allow it for Baddy Tension in your phone’s Settings → Apps → Permissions, then try again.'
+        : 'Microphone access was blocked. Allow it in your browser settings, then try again.')
       : 'Couldn’t start the microphone: ' + (e && e.message ? e.message : e));
     return;
   }
   els.listen.textContent = 'Stop';
   els.listen.classList.add('live');
+  keepAwake(true);
   setStatus(`Listening… tap the centre of the strings ${state.settings.taps} time${state.settings.taps === 1 ? '' : 's'}.`);
   drawSpectrum();
 }
@@ -876,11 +907,25 @@ for (const [id, key] of Object.entries(settingInputs)) {
   };
 }
 
-$('exportBtn').onclick = () => {
+$('exportBtn').onclick = async () => {
+  const name = `baddy-tension-${today()}.json`;
+  if (NATIVE) {
+    // App webviews can't download files, so save it and open the share sheet
+    // (Drive, email, Files…).
+    try {
+      const { uri } = await nativeCall('Filesystem', 'writeFile', {
+        path: name, data: JSON.stringify(state, null, 2), directory: 'CACHE', encoding: 'utf8',
+      });
+      await nativeCall('Share', 'share', { title: 'Baddy Tension backup', files: [uri] });
+    } catch (err) {
+      if (!/cancel/i.test(String(err && err.message))) setStatus('Couldn’t export the backup: ' + (err && err.message ? err.message : err));
+    }
+    return;
+  }
   const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `baddy-tension-${today()}.json`;
+  a.download = name;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 };
@@ -905,7 +950,8 @@ $('importFile').onchange = async e => {
 window.addEventListener('resize', () => { drawSpectrum(); drawHistory(); });
 window.matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', renderAll);
 
-if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+// The phone app ships its files inside the app, so it needs no offline cache.
+if (!NATIVE && 'serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 

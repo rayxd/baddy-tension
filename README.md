@@ -4,22 +4,43 @@ A phone web app that listens to you tap your badminton strings and estimates the
 
 ## Put it on your phone
 
-Phones only allow microphone access over **https**, so the app needs hosting. Both options below are free:
+### Android app (APK)
+Every push to the default branch builds the app with GitHub Actions (`.github/workflows/android.yml`) and publishes it as a release.
 
-**Netlify Drop (quickest, no git needed)**
-1. Go to https://app.netlify.com/drop on your PC.
-2. Drag this whole `BaddyApp` folder onto the page.
-3. Open the `https://….netlify.app` link it gives you on your phone.
-4. Add it to your home screen: Share → *Add to Home Screen* on iPhone (Safari), or ⋮ → *Install app* on Android (Chrome).
+1. On your Android phone, open
+   **https://github.com/rayxd/baddy-tension/releases/latest/download/baddy-tension.apk**
+2. Open the downloaded file. If Android asks, allow your browser to *install unknown apps*.
+3. Open **Baddy Tension** and allow the microphone when asked.
 
-**GitHub Pages**: push the folder to a GitHub repo, then turn on Settings → Pages → "Deploy from branch".
+New builds install over the old one and keep your rackets and history, because the APK is always signed with the same key (`android/app/debug.keystore`). This is a debug key, which is fine for installing it yourself. For the Play Store you would need your own release key.
 
-## Run it locally (PC only)
+Builds from other branches skip the release: get the APK from the run's **Artifacts** on the Actions tab.
+
+### iPhone app
+This needs a Mac with Xcode (a free Apple ID works for your own phone, but the app expires after 7 days; a paid developer account removes that limit).
 
 ```
-node serve.js
+npm install
+npm run ios        # copies the web app in and opens Xcode
 ```
-Then open http://localhost:8080. A PC microphone works on localhost.
+In Xcode pick your phone as the target, set your team under *Signing & Capabilities*, then press Run.
+
+### Web app (any phone, no install)
+Phones only allow microphone access over **https**, so the web version needs hosting. Turn on GitHub Pages (Settings → Pages → "Deploy from branch"), or drag the folder onto https://app.netlify.com/drop. Open the link on your phone and add it to your home screen.
+
+## Developing
+
+The web app (`index.html`, `app.js`, `style.css`) is the whole app. The `android/` and `ios/` folders are [Capacitor](https://capacitorjs.com) shells that bundle it.
+
+```
+npm install
+node serve.js       # try it on your PC at http://localhost:8080
+npm run sync        # copy web changes into android/ and ios/
+npm run android     # open in Android Studio to run on a plugged-in phone
+```
+After changing `assets/icon-*.png` or the splash images, run `npx capacitor-assets generate --android --ios`.
+
+Inside the phone app, **Export backup** opens the share sheet (save to Drive, Files, email…), and the screen stays awake while it's listening.
 
 ## Using it
 1. Set up your racket (**Edit**): string bed size, string gauge, and the tension it was strung at.

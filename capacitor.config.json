@@ -1,0 +1,9 @@
+{
+  "appId": "com.baddytension.app",
+  "appName": "Baddy Tension",
+  "webDir": "www",
+  "backgroundColor": "#0e1621",
+  "plugins": {
+    "SystemBars": { "insetsHandling": "css", "initialViewportFitValueHint": "cover" }
+  }
+}
