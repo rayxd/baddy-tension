@@ -1,9 +1,16 @@
 // Network first so updates show up straight away; cached copy when offline at the court.
-const CACHE = 'baddy-tension-v4';
+// Bump VERSION (and the ?v= tags in index.html) with each release.
+const VERSION = 5;
+const CACHE = `baddy-tension-v${VERSION}`;
 const SHELL = ['./', 'index.html', 'app.js', 'scene3d.js', 'vendor/three.module.min.js', 'style.css', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  // cache: 'reload' skips the browser's HTTP cache, so the offline copy is the new one.
+  e.waitUntil(
+    caches.open(CACHE)
+      .then(c => c.addAll(SHELL.map(u => new Request(u, { cache: 'reload' }))))
+      .then(() => self.skipWaiting())
+  );
 });
 
 self.addEventListener('activate', e => {
@@ -15,14 +22,19 @@ self.addEventListener('activate', e => {
 });
 
 self.addEventListener('fetch', e => {
-  if (e.request.method !== 'GET') return;
+  const req = e.request;
+  if (req.method !== 'GET' || new URL(req.url).origin !== location.origin) return;
+  // GitHub Pages lets browsers reuse files for 10 minutes. 'no-cache' makes the
+  // browser check with the server every time, so a new version shows at once.
   e.respondWith(
-    fetch(e.request)
+    fetch(req.url, { cache: 'no-cache', credentials: 'same-origin' })
       .then(res => {
-        const copy = res.clone();
-        caches.open(CACHE).then(c => c.put(e.request, copy));
+        if (res.ok) {
+          const copy = res.clone();
+          caches.open(CACHE).then(c => c.put(req, copy));
+        }
         return res;
       })
-      .catch(() => caches.match(e.request))
+      .catch(() => caches.match(req, { ignoreSearch: true }))
   );
 });
