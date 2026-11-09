@@ -49,6 +49,17 @@ Inside the phone app, **Export backup** opens the share sheet (save to Drive, Fi
 4. **Save reading** to track tension loss over time. The app warns you once the loss passes your restring threshold.
 
 ## How it works
-The string bed is modelled as a drum membrane. Its pitch is f = 2.405·c / (2πR), where the wave speed is c = √(T / 2μ), T is the string tension, μ is the string's mass per metre (from the gauge), and R is the radius of a circle with the same area as the head. A 0.8 empirical factor accounts for frame flex and air loading. Calibration then scales the result for each racket. Pitch is found with a 32k-point FFT over 150 ms just after each tap, with parabolic peak interpolation, and the reading is the median of several taps.
+The string bed is modelled as a drum membrane. Its pitch is f = 2.405·c / (2πR), where the wave speed is c = √(T / 2μ), T is the string tension, μ is the string's mass per metre (from the gauge), and R is the radius of a circle with the same area as the head. That sets the tension at 1200 Hz for your racket and string. Away from 1200 Hz, tension follows pitch^1.47 instead of the ideal pitch², because real frames give a little more at higher tension. Calibration then scales the result for each racket.
+
+The 0.88 frame factor and the 1.47 exponent were fitted to a reference recording of one racket strung at four tensions. The fit is within 0.3 lbs at every point:
+
+| Strung at | Pitch | App reads |
+|---|---|---|
+| 24 lbs | 1177 Hz | 24.0 lbs |
+| 26 lbs | 1237 Hz | 25.8 lbs |
+| 28 lbs | 1316 Hz | 28.3 lbs |
+| 30 lbs | 1362 Hz | 29.7 lbs |
+
+Pitch is found with a 32k-point FFT over 120 ms just after each tap, with parabolic peak interpolation. Only 600–1800 Hz is searched. The second ring mode (about 1.56× the fundamental) is often as loud as the fundamental, so the app takes the lowest clear peak within 12 dB of the loudest one. It also skips any tap that reads 1.45–1.75× the others. Sounds whose peak is under 20 dB above the background, such as talking, are ignored. The reading is the median of several taps.
 
 Data is stored only on your phone (localStorage). Use **Export backup** to keep a copy.

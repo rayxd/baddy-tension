@@ -7,10 +7,21 @@ const GRAVITY = 9.80665;
 // Badminton strings are mostly multifilament nylon.
 const STRING_DENSITY = 1140; // kg/m^3
 // An ideal membrane rings higher than a real racket: the frame flexes and the
-// air the strings push around adds mass. 0.8 matches published tennis data;
-// per-racket calibration corrects the rest.
-const MEMBRANE_K = 0.8;
+// air the strings push around adds mass. Fitted to a reference recording of one
+// racket strung at 24, 26, 28 and 30 lbs (1177, 1237, 1316 and 1362 Hz).
+const MEMBRANE_K = 0.88;
 const BESSEL_J0_ZERO = 2.4048; // fundamental mode of a circular membrane
+// An ideal membrane gives tension ~ pitch^2, but in the reference recording
+// tension rose as pitch^1.47 (the frame gives a little more at higher tension).
+// The physics sets the level at REF_FREQ; the fitted exponent sets the slope.
+const REF_FREQ = 1200;
+const TENSION_EXPONENT = 1.47;
+// The (1,1) membrane mode rings ~1.59x the fundamental and is often as loud.
+const OVERTONE_DB = 12;
+const MODEL_VERSION = 2;
+// Rings below this are voices or room noise, not strings. Real taps in the
+// reference recording scored 29-47 dB; talking and bumps scored under 20.
+const MIN_SNR_DB = 20;
 
 const RING_SIZE = 1 << 16;
 const FFT_SIZE = 1 << 15;
@@ -97,7 +108,9 @@ function defaultState() {
   return {
     unit: 'lbs',
     activeId: r.id,
-    settings: { fmin: 350, fmax: 2200, sensitivity: 6, taps: 3 },
+    // 600-1800 Hz covers roughly 10-45 lbs and keeps most overtones out.
+    settings: { fmin: 600, fmax: 1800, sensitivity: 6, taps: 3 },
+    modelVersion: MODEL_VERSION,
     rackets: [r],
     readings: [],
   };
@@ -111,6 +124,18 @@ function loadState() {
       s.settings = Object.assign(d.settings, s.settings);
       s.readings = s.readings || [];
       if (!s.rackets.some(r => r.id === s.activeId)) s.activeId = s.rackets[0].id;
+      if ((s.modelVersion || 1) < MODEL_VERSION) {
+        // The tension model changed, so old calibration factors no longer fit.
+        // Saved readings keep their pitch and are simply re-converted.
+        s.rackets.forEach(r => { r.cal = 1; });
+        if (s.settings.fmin === 350 && s.settings.fmax === 2200) {
+          const fresh = defaultState().settings;
+          s.settings.fmin = fresh.fmin;
+          s.settings.fmax = fresh.fmax;
+        }
+        s.modelVersion = MODEL_VERSION;
+        try { localStorage.setItem(STORE_KEY, JSON.stringify(s)); } catch (e) { /* ignore */ }
+      }
       return s;
     }
   } catch (e) { /* storage unavailable or corrupt */ }
@@ -132,11 +157,15 @@ function activeRacket() {
 // Model the string bed as a membrane: strings at spacing d with tension T give
 // membrane tension T/d per direction and areal density 2*mu/d, so the wave speed
 // is sqrt(T / (2*mu)). The oval head is treated as a circle of equal area.
-function uncalibratedTensionKg(freq, r) {
+function membraneTensionKg(freq, r) {
   const radius = Math.sqrt((r.lengthMm / 1000) * (r.widthMm / 1000)) / 2;
   const mu = STRING_DENSITY * Math.PI * Math.pow(r.gaugeMm / 2000, 2);
   const waveSpeed = (2 * Math.PI * radius * freq) / (BESSEL_J0_ZERO * MEMBRANE_K);
   return (2 * mu * waveSpeed * waveSpeed) / GRAVITY;
+}
+
+function uncalibratedTensionKg(freq, r) {
+  return membraneTensionKg(REF_FREQ, r) * Math.pow(freq / REF_FREQ, TENSION_EXPONENT);
 }
 
 function tensionKg(freq, r) {
@@ -201,11 +230,25 @@ function analyzeTap(samples, sampleRate, fmin, fmax) {
   const lo = Math.max(2, Math.floor(fmin / binHz));
   const hi = Math.min(FFT_SIZE / 2 - 2, Math.ceil(fmax / binHz));
   const mags = new Float64Array(hi - lo + 1);
-  let best = 0;
+  let loudest = 0;
   for (let k = lo; k <= hi; k++) {
     const m = Math.hypot(re[k], im[k]);
     mags[k - lo] = m;
-    if (m > mags[best]) best = k - lo;
+    if (m > mags[loudest]) loudest = k - lo;
+  }
+
+  // Higher ring modes can be as loud as the fundamental, so take the lowest
+  // clear peak (local max over +-30 Hz) within OVERTONE_DB of the loudest.
+  const floor = mags[loudest] * Math.pow(10, -OVERTONE_DB / 20);
+  const halfWidth = Math.max(1, Math.round(30 / binHz));
+  let best = loudest;
+  for (let i = 1; i < loudest; i++) {
+    if (mags[i] < floor) continue;
+    let isPeak = true;
+    for (let j = Math.max(0, i - halfWidth); j <= Math.min(mags.length - 1, i + halfWidth); j++) {
+      if (mags[j] > mags[i]) { isPeak = false; break; }
+    }
+    if (isPeak) { best = i; break; }
   }
   if (best === 0 || best === mags.length - 1) return null;
 
@@ -648,12 +691,21 @@ function flashTap() {
 // Every tap updates the reading straight away; the median of the set
 // settles it, then the next tap starts a fresh set.
 function handleTap({ freq, snrDb }) {
-  if (snrDb < 8) {
-    setStatus('Heard a tap but no clear ring. Flick the centre of the strings, not the frame.');
+  if (snrDb < MIN_SNR_DB) {
+    setStatus('Heard a sound but no clear ring. Flick the centre of the strings, not the frame.');
     return;
   }
   const need = state.settings.taps;
   if (tapFreqs.length >= need) tapFreqs = [];
+  // A tap that mostly rang the second mode reads ~1.5-1.7x the others.
+  if (tapFreqs.length) {
+    const ratio = freq / median(tapFreqs);
+    if (ratio > 1.45 && ratio < 1.75) {
+      setStatus('That tap rang an overtone, so it was skipped. Tap the centre again.');
+      return;
+    }
+    if (ratio > 1 / 1.75 && ratio < 1 / 1.45) tapFreqs = []; // earlier taps were the overtones
+  }
   tapFreqs.push(freq);
   els.peak.textContent = `last tap ${Math.round(freq)} Hz`;
   lastFreq = median(tapFreqs);
