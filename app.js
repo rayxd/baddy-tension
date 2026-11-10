@@ -28,6 +28,29 @@ const EXTRA_TAPS = 2;
 // Background peak level above which the room is too noisy to tap reliably.
 const NOISY_LEVEL = 0.03;
 const CLIP_LEVEL = 0.98;
+// Noisy halls: the app learns the background spectrum between taps and
+// subtracts it (twice over, as background levels wobble) before looking for
+// the ring. A ring must stand this far above the background at its pitch.
+const NOISE_OVERSUB = 2;
+const MIN_EXCESS_DB = 12;
+// With a learned background, a ring must also stand out within its own tap,
+// which keeps talking out (voices scored under 17 dB, taps 21 dB and up).
+const MIN_SNR_NOISY_DB = 18;
+// Other courts' shuttle hits ring like a racket but reach the phone much
+// quieter than your own taps close by. Rings far quieter than your recent
+// taps are ignored.
+const OTHER_COURT_RATIO = 0.5; // about 6 dB quieter
+// ...but only in a noisy room (background above about -30 dB of your taps),
+// so a soft tap in a quiet room still counts.
+const NOISY_ROOM_RATIO = 0.03;
+const LEVEL_MEMORY = 8;
+const NOISE_EVERY_S = 0.25; // how often to sample the background
+const NOISE_QUIET_S = 0.5; // ...and only this long after the last tap
+// Focus: search only the pitches this racket can plausibly ring at, from a
+// fraction of its strung tension up to a little above it. Wider when the
+// racket isn't calibrated, as the general model may be off.
+const FOCUS_CAL = [0.7, 1.15];
+const FOCUS_UNCAL = [0.6, 1.3];
 
 const RING_SIZE = 1 << 16;
 const FFT_SIZE = 1 << 15;
@@ -178,7 +201,7 @@ function defaultState() {
     unit: 'lbs',
     activeId: r.id,
     // 600-1800 Hz covers roughly 10-45 lbs and keeps most overtones out.
-    settings: { fmin: 600, fmax: 1800, sensitivity: 6, taps: 3 },
+    settings: { fmin: 600, fmax: 1800, sensitivity: 6, taps: 3, focus: true },
     modelVersion: MODEL_VERSION,
     historyView: 'current',
     rackets: [r],
@@ -299,6 +322,27 @@ function tensionKg(freq, r) {
   return uncalibratedTensionKg(freq, r) * r.cal; // r.cal: a single factor from older versions
 }
 
+// The pitch at which this racket reads a given tension (tension rises with pitch).
+function freqForKg(kg, r) {
+  let lo = 100, hi = 6000;
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2;
+    if (tensionKg(mid, r) < kg) lo = mid; else hi = mid;
+  }
+  return (lo + hi) / 2;
+}
+
+// The pitch range to search for the ring.
+function analysisBand() {
+  const { fmin, fmax, focus } = state.settings;
+  if (!focus) return [fmin, fmax];
+  const r = activeRacket();
+  const [loK, hiK] = isCalibrated(r) ? FOCUS_CAL : FOCUS_UNCAL;
+  const lo = Math.max(fmin, freqForKg(r.strungKg * loK, r));
+  const hi = Math.min(fmax, freqForKg(r.strungKg * hiK, r));
+  return hi - lo > 100 ? [lo, hi] : [fmin, fmax];
+}
+
 function addCalPoint(r, freq, kg) {
   const pts = calPoints(r).slice();
   const date = today();
@@ -368,8 +412,8 @@ function fft(re, im) {
   }
 }
 
-// Find the dominant ring frequency in a short burst of samples.
-function analyzeTap(samples, sampleRate, fmin, fmax) {
+// Magnitude spectrum of a Hann-windowed burst (bins 0 .. FFT_SIZE/2).
+function spectrum(samples) {
   const n = Math.min(samples.length, FFT_SIZE);
   const re = new Float64Array(FFT_SIZE);
   const im = new Float64Array(FFT_SIZE);
@@ -377,17 +421,32 @@ function analyzeTap(samples, sampleRate, fmin, fmax) {
     re[i] = samples[i] * (0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (n - 1)));
   }
   fft(re, im);
+  const mags = new Float64Array(FFT_SIZE / 2);
+  for (let k = 0; k < mags.length; k++) mags[k] = Math.hypot(re[k], im[k]);
+  return mags;
+}
 
+// Find the ring frequency in a short burst of samples. noiseSpec, when known,
+// is the room's background spectrum, which is subtracted first.
+function analyzeTap(samples, sampleRate, fmin, fmax, noiseSpec) {
+  const full = spectrum(samples);
   const binHz = sampleRate / FFT_SIZE;
-  const lo = Math.max(2, Math.floor(fmin / binHz));
-  const hi = Math.min(FFT_SIZE / 2 - 2, Math.ceil(fmax / binHz));
+  const lo = Math.max(3, Math.floor(fmin / binHz));
+  const hi = Math.min(FFT_SIZE / 2 - 3, Math.ceil(fmax / binHz));
+  const raw = new Float64Array(hi - lo + 1);
+  const bg = new Float64Array(hi - lo + 1);
   const mags = new Float64Array(hi - lo + 1);
   let loudest = 0;
   for (let k = lo; k <= hi; k++) {
-    const m = Math.hypot(re[k], im[k]);
-    mags[k - lo] = m;
-    if (m > mags[loudest]) loudest = k - lo;
+    const i = k - lo;
+    raw[i] = full[k];
+    // Background at this pitch: the loudest of the neighbouring bins, as
+    // noise energy spreads a little either side.
+    bg[i] = noiseSpec ? Math.max(noiseSpec[k - 1], noiseSpec[k], noiseSpec[k + 1]) : 0;
+    mags[i] = Math.max(0, raw[i] - NOISE_OVERSUB * bg[i]);
+    if (mags[i] > mags[loudest]) loudest = i;
   }
+  if (mags[loudest] <= 0) return { freq: null, snrDb: 0, excessDb: 0 };
 
   // Higher ring modes can be as loud as the fundamental, so take the lowest
   // clear peak (local max over +-30 Hz) within OVERTONE_DB of the loudest.
@@ -402,7 +461,10 @@ function analyzeTap(samples, sampleRate, fmin, fmax) {
     }
     if (isPeak) { best = i; break; }
   }
-  if (best === 0 || best === mags.length - 1) return { freq: null, snrDb: 0 };
+  const excessDb = noiseSpec ? 20 * Math.log10(raw[best] / (bg[best] + 1e-12)) : null;
+  // A peak on the edge of the range means the ring lies outside it.
+  if (best === 0) return { freq: null, snrDb: 0, excessDb, edge: 'low' };
+  if (best === mags.length - 1) return { freq: null, snrDb: 0, excessDb, edge: 'high' };
 
   // Parabolic interpolation on log magnitude for sub-bin precision.
   const a = Math.log(mags[best - 1] + 1e-12);
@@ -411,11 +473,35 @@ function analyzeTap(samples, sampleRate, fmin, fmax) {
   const offset = (0.5 * (a - c)) / (a - 2 * b + c || 1e-12);
   const freq = (lo + best + offset) * binHz;
 
-  const sorted = Array.from(mags).sort((x, y) => x - y);
+  const sorted = Array.from(raw).sort((x, y) => x - y);
   const median = sorted[Math.floor(sorted.length / 2)] || 1e-12;
-  const snrDb = 20 * Math.log10(mags[best] / median);
+  const snrDb = 20 * Math.log10(raw[best] / median);
 
-  return { freq, snrDb };
+  return { freq, snrDb, excessDb };
+}
+
+// Whether a tap's ring is clear enough to count. With a learned background,
+// judge it against the background at that pitch; otherwise against the rest
+// of the tap's own spectrum.
+function ringIsClear({ snrDb, excessDb }) {
+  return excessDb != null ? excessDb >= MIN_EXCESS_DB && snrDb >= MIN_SNR_NOISY_DB : snrDb >= MIN_SNR_DB;
+}
+
+// Loudness of recent clear rings. Your own taps are the loudest of them, so
+// the reference is the upper quartile; it adjusts by itself if the phone moves.
+let ringLevels = [];
+function tapReference() {
+  return ringLevels.length >= 2
+    ? [...ringLevels].sort((a, b) => a - b)[Math.floor(ringLevels.length * 0.75)]
+    : null;
+}
+function isOtherCourt(peak, background) {
+  if (peak == null) return false;
+  const ref = tapReference();
+  ringLevels.push(peak);
+  if (ringLevels.length > LEVEL_MEMORY) ringLevels.shift();
+  if (ref == null || !(background > ref * NOISY_ROOM_RATIO)) return false;
+  return peak < ref * OTHER_COURT_RATIO;
 }
 
 function median(values) {
@@ -470,6 +556,21 @@ class TapListener {
     this.pendingOnset = null;
     this.lastOnset = -Infinity;
     this.warmupUntil = sampleRate * 0.25;
+    this.noiseSpec = null; // the room's background spectrum, learned between taps
+    this.nextNoiseAt = 0;
+  }
+
+  // Sample the background every NOISE_EVERY_S while no tap is ringing, and
+  // keep a running average of its spectrum.
+  learnNoise(length) {
+    if (this.written < length || this.written < this.nextNoiseAt) return;
+    this.nextNoiseAt = this.written + Math.round(this.sampleRate * NOISE_EVERY_S);
+    const win = new Float32Array(length);
+    const start = this.written - length;
+    for (let i = 0; i < length; i++) win[i] = this.ring[(start + i) % RING_SIZE];
+    const spec = spectrum(win);
+    if (!this.noiseSpec) { this.noiseSpec = spec; return; }
+    for (let k = 0; k < spec.length; k++) this.noiseSpec[k] += (spec[k] - this.noiseSpec[k]) * 0.25;
   }
 
   stop() {
@@ -511,10 +612,12 @@ class TapListener {
           if (Math.abs(v) > tapPeak) tapPeak = Math.abs(v);
         }
         this.pendingOnset = null;
-        const { fmin, fmax } = state.settings;
-        const result = analyzeTap(samples, this.sampleRate, fmin, fmax);
+        const [fmin, fmax] = analysisBand();
+        const result = analyzeTap(samples, this.sampleRate, fmin, fmax, this.noiseSpec);
         // How loud the tap was against what triggered it, for coaching.
         result.loudness = tapPeak / this.trigger;
+        result.peak = tapPeak;
+        result.background = this.noise;
         result.clipped = tapPeak >= CLIP_LEVEL;
         this.onTap(result);
       }
@@ -523,7 +626,11 @@ class TapListener {
 
     // Sensitivity 10 triggers at 2x the background peak level, 1 at 12x.
     const ratio = 2 * Math.pow(6, (10 - state.settings.sensitivity) / 9);
-    const threshold = Math.max(this.noise * ratio, 0.002);
+    let threshold = Math.max(this.noise * ratio, 0.002);
+    // In a loud hall the background can push the trigger above your own taps.
+    // Once your taps' loudness is known, keep the trigger well below it.
+    const ref = tapReference();
+    if (ref) threshold = Math.max(0.002, Math.min(threshold, ref * 0.5));
     const sinceTap = start - this.lastOnset;
 
     // Re-arm once the previous ring has died away, so its tail can't
@@ -541,6 +648,7 @@ class TapListener {
       this.lastOnset = onset;
       this.onOnset();
     } else if (sinceTap > this.sampleRate * 0.3) {
+      if (sinceTap > this.sampleRate * NOISE_QUIET_S) this.learnNoise(length);
       // Track the room's background level so loud rooms don't false-trigger.
       this.noise += (peak - this.noise) * (peak > this.noise ? 0.01 : 0.05);
     }
@@ -786,9 +894,9 @@ function sizeCanvas(canvas, cssHeight) {
 function drawSpectrum() {
   const { ctx, w, h } = sizeCanvas(els.spectrum, 150);
   ctx.clearRect(0, 0, w, h);
-  const { fmin, fmax } = state.settings;
-  const lo = Math.max(0, fmin * 0.6);
-  const hi = fmax * 1.1;
+  const [fmin, fmax] = analysisBand();
+  const lo = Math.max(0, state.settings.fmin * 0.6);
+  const hi = state.settings.fmax * 1.1;
   const x = f => ((f - lo) / (hi - lo)) * w;
 
   // Analysis band
@@ -1237,7 +1345,17 @@ function renderConfidence(r) {
 }
 
 // Explain why a tap didn't count, so the next one does.
-function coachFailedTap({ freq, loudness }) {
+function coachFailedTap({ freq, loudness, edge, excessDb }) {
+  // A clear ring just outside the racket's range: say so, rather than guess.
+  if (edge && state.settings.focus && excessDb != null && excessDb >= MIN_EXCESS_DB) {
+    const r = activeRacket();
+    const [loK, hiK] = isCalibrated(r) ? FOCUS_CAL : FOCUS_UNCAL;
+    const limit = `${fmt(r.strungKg * (edge === 'low' ? loK : hiK))} ${state.unit}`;
+    setStatus(edge === 'low'
+      ? `That ring sounded lower than ${limit}, below this racket's usual range. If it hasn't been restrung for a long time, check its strung tension, or turn off Focus in Settings.`
+      : `That ring sounded higher than ${limit}. Check the racket's strung tension, or turn off Focus in Settings.`, 'tip');
+    return;
+  }
   if (freq == null) {
     setStatus('Heard a knock but no string ring. Flick the centre of the strings, not the frame.', 'tip');
   } else if (loudness != null && loudness < 2.5) {
@@ -1253,10 +1371,15 @@ function coachFailedTap({ freq, loudness }) {
 function handleTap(result) {
   lastTapAt = performance.now();
   noisyWarned = false;
-  const { freq, snrDb, clipped } = result;
-  if (freq == null || snrDb < MIN_SNR_DB) {
+  const { freq, clipped } = result;
+  if (freq == null || !ringIsClear(result)) {
     if (scene3d) scene3d.classify({ kind: 'dud' });
     coachFailedTap(result);
+    return;
+  }
+  if (isOtherCourt(result.peak, result.background)) {
+    if (scene3d) scene3d.classify({ kind: 'dud' });
+    setStatus('Heard a much quieter ring, probably another court, so it was ignored. Keep tapping your strings.');
     return;
   }
   if (setDone) {
@@ -1322,7 +1445,7 @@ function checkNoise() {
   const quietFor = performance.now() - lastTapAt;
   if (listener.noise > NOISY_LEVEL && quietFor > 3000 && !noisyWarned) {
     noisyWarned = true;
-    setStatus('It’s noisy here, so taps may be missed or misread. Find a quieter spot, or hold the phone closer to the strings.', 'tip');
+    setStatus('It’s noisy here. The app filters out the background, but for the best reading hold the phone 2–5 cm behind the strings and flick firmly.', 'tip');
   } else if (listener.noise < NOISY_LEVEL * 0.5 && noisyWarned && quietFor > 3000) {
     noisyWarned = false;
     setStatus('Quieter now. Tap the centre of the strings.');
@@ -1352,6 +1475,7 @@ async function toggleListening() {
   tapFreqs = [];
   setDone = false;
   noisyWarned = false;
+  ringLevels = [];
   lastTapAt = performance.now();
   renderTapDots();
   listener = new TapListener(handleTap, rms => {
@@ -1719,6 +1843,15 @@ document.querySelectorAll('[data-unit]').forEach(b => {
   b.onclick = () => { state.unit = b.dataset.unit; saveState(); renderAll(); };
 });
 
+$('setFocus').checked = state.settings.focus !== false;
+$('setFocus').onchange = () => {
+  state.settings.focus = $('setFocus').checked;
+  tapFreqs = [];
+  setDone = false;
+  saveState();
+  renderAll();
+};
+
 const settingInputs = { setFmin: 'fmin', setFmax: 'fmax', setSens: 'sensitivity', setTaps: 'taps' };
 for (const [id, key] of Object.entries(settingInputs)) {
   const input = $(id);
@@ -1807,7 +1940,8 @@ window.simulateTap = (freq, sampleRate = 48000) => {
       + 0.15 * Math.exp(-t * 60) * Math.sin(2 * Math.PI * freq * 2.3 * t)
       + 0.01 * (Math.random() * 2 - 1);
   }
-  const result = analyzeTap(s, sampleRate, state.settings.fmin, state.settings.fmax);
+  const [lo, hi] = analysisBand();
+  const result = analyzeTap(s, sampleRate, lo, hi);
   result.loudness = 10;
   if (scene3d) scene3d.tap();
   handleTap(result);
