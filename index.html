@@ -14,7 +14,7 @@
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon-192.png">
 <link rel="preload" href="vendor/fonts/saira-condensed-latin-700-normal.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="style.css?v=8">
+<link rel="stylesheet" href="style.css?v=9">
 </head>
 <body>
 
@@ -114,6 +114,7 @@
         <label>Tap sensitivity (1–10)<input id="setSens" type="range" min="1" max="10" step="1"></label>
         <label>Taps per reading<input id="setTaps" type="number" min="1" max="7" step="1"></label>
       </div>
+      <label class="check"><input type="checkbox" id="setFocus"> Focus on this racket's tension range. This ignores sounds far from where its strings can be, which helps a lot in noisy halls.</label>
       <div class="row">
         <button type="button" id="exportBtn" class="btn">Export backup</button>
         <button type="button" id="importBtn" class="btn">Import backup</button>
@@ -126,7 +127,7 @@
       <p>The tight string bed rings like a drum skin. Tighter strings ring higher (about 1177 Hz at 24 lbs up to 1362 Hz at 30 lbs on a typical racket), so the app measures the pitch of your tap and works backwards using the racket's head size and string gauge.</p>
       <ul>
         <li>Tap the <b>centre</b> of the strings. A fingernail flick or the butt of another racket works well.</li>
-        <li>Measure somewhere quiet, with the phone 5–20 cm from the strings.</li>
+        <li>Hold the phone 5–20 cm from the strings. In a noisy hall, hold it 2–5 cm behind the strings and flick firmly. The app learns the hall's background sound while you're listening and filters it out, so give it a second or two after pressing Start before the first tap.</li>
         <li>Calibrate right after a fresh restring. Set the date strung to today when you edit the racket, and the app offers to calibrate on your next reading. This corrects for your racket's frame and string, and makes later readings far more accurate.</li>
         <li>The <b>±</b> after a reading shows how closely your taps agreed. If they disagree, the app asks for another tap.</li>
         <li>Swipe left or right on the racket to switch rackets, or tap the racket name at the top.</li>
@@ -200,7 +201,7 @@
   </form>
 </dialog>
 
-<script src="app.js?v=8"></script>
-<script type="module" src="scene3d.js?v=8"></script>
+<script src="app.js?v=9"></script>
+<script type="module" src="scene3d.js?v=9"></script>
 </body>
 </html>
