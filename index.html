@@ -14,7 +14,7 @@
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon-192.png">
 <link rel="preload" href="vendor/fonts/saira-condensed-latin-700-normal.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="style.css?v=7">
+<link rel="stylesheet" href="style.css?v=8">
 </head>
 <body>
 
@@ -188,15 +188,19 @@
     <p class="small">Use this right after a restring, or when you know the racket's real tension. The last reading (<b id="calFreq">--</b>) will be matched to:</p>
     <label><span>Known tension (<span class="unitName">lbs</span>)</span><input name="known" type="number" min="5" max="40" step="0.1" required></label>
     <label class="check"><input type="checkbox" name="resetDate" checked> Also mark as freshly strung today</label>
+    <div class="learned">
+      <p class="small muted" id="calLearned"></p>
+      <ul class="cal-points" id="calPoints"></ul>
+    </div>
     <div class="row">
       <button value="cancel" formnovalidate class="btn">Cancel</button>
-      <button type="button" id="resetCal" class="btn">Reset calibration</button>
+      <button type="button" id="resetCal" class="btn">Clear all</button>
       <button value="save" class="btn primary">Calibrate</button>
     </div>
   </form>
 </dialog>
 
-<script src="app.js?v=7"></script>
-<script type="module" src="scene3d.js?v=7"></script>
+<script src="app.js?v=8"></script>
+<script type="module" src="scene3d.js?v=8"></script>
 </body>
 </html>

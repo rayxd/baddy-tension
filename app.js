@@ -244,8 +244,84 @@ function uncalibratedTensionKg(freq, r) {
   return membraneTensionKg(REF_FREQ, r) * Math.pow(freq / REF_FREQ, TENSION_EXPONENT);
 }
 
+/* ---------- Per-racket learning ---------- */
+
+// Every calibration is saved as a point (pitch, known tension, string gauge).
+// From those points the app fits this racket's own curve,
+//   tension = gauge² · e^a · pitch^β,
+// so it learns the racket's level and, once points cover different
+// tensions, its slope too. Tension is stored per gauge², so a string change
+// keeps the points useful.
+const MAX_CAL_POINTS = 10;
+// How strongly the general slope holds when points are close together. Worth
+// about two points 4% apart in pitch (about 6% apart in tension).
+const SLOPE_PRIOR = 2 * Math.pow(Math.log(1.04) / 2, 2);
+
+function calPoints(r) {
+  return Array.isArray(r.calPoints) ? r.calPoints : [];
+}
+
+function isCalibrated(r) {
+  return calPoints(r).length > 0 || r.cal !== 1;
+}
+
+const fitCache = new WeakMap();
+function racketFit(r) {
+  const pts = calPoints(r);
+  if (!pts.length) return null;
+  const key = JSON.stringify(pts);
+  const hit = fitCache.get(r);
+  if (hit && hit.key === key) return hit.fit;
+  const xs = pts.map(p => Math.log(p.freq));
+  const ys = pts.map(p => Math.log(p.kg / (p.gauge * p.gauge)));
+  const n = pts.length;
+  const mx = xs.reduce((a, b) => a + b, 0) / n;
+  const my = ys.reduce((a, b) => a + b, 0) / n;
+  let sxx = 0, sxy = 0;
+  xs.forEach((x, i) => { sxx += (x - mx) ** 2; sxy += (x - mx) * (ys[i] - my); });
+  // Least squares, pulled towards the general slope when the points are
+  // too close together in pitch to say much about it.
+  let beta = (sxy + SLOPE_PRIOR * TENSION_EXPONENT) / (sxx + SLOPE_PRIOR);
+  beta = Math.min(2.2, Math.max(1.0, beta));
+  const a = my - beta * mx;
+  // How far the points sit from the curve (as a fraction of tension).
+  let rss = 0;
+  xs.forEach((x, i) => { rss += (ys[i] - a - beta * x) ** 2; });
+  const spread = n >= 3 ? Math.sqrt(rss / (n - 2)) : null;
+  const fit = { a, beta, n, spread };
+  fitCache.set(r, { key, fit });
+  return fit;
+}
+
 function tensionKg(freq, r) {
-  return uncalibratedTensionKg(freq, r) * r.cal;
+  const fit = racketFit(r);
+  if (fit) return Math.exp(fit.a) * Math.pow(freq, fit.beta) * r.gaugeMm * r.gaugeMm;
+  return uncalibratedTensionKg(freq, r) * r.cal; // r.cal: a single factor from older versions
+}
+
+function addCalPoint(r, freq, kg) {
+  const pts = calPoints(r).slice();
+  const date = today();
+  // Calibrating twice the same day at the same tension refines, not doubles, that point.
+  const same = pts.findIndex(p => p.date === date && Math.abs(p.kg - kg) < 0.1);
+  if (same >= 0) pts.splice(same, 1);
+  pts.push({ freq, kg, gauge: r.gaugeMm, date });
+  r.calPoints = pts.slice(-MAX_CAL_POINTS);
+  r.cal = 1;
+}
+
+function calSummary(r) {
+  const fit = racketFit(r);
+  if (!fit) {
+    return r.cal === 1
+      ? 'Not calibrated yet. Readings use the general model.'
+      : `Calibrated in an older version (general model × ${r.cal.toFixed(3)}). Calibrate again to start learning this racket's curve.`;
+  }
+  if (fit.n === 1) return 'Learned from 1 calibration. Each time you calibrate, for example after a restring, the app refines this racket\u2019s curve.';
+  const fitText = fit.spread != null
+    ? ` The curve fits them within about ±${Math.max(0.1, toUnit(fit.spread * r.strungKg)).toFixed(1)} ${state.unit}.`
+    : '';
+  return `Learned from ${fit.n} calibrations.${fitText}`;
 }
 
 function toUnit(kg) {
@@ -686,7 +762,7 @@ function renderReading() {
     els.alert.textContent = `Down ${lossPct.toFixed(0)}%. Time to restring.`;
     els.alert.classList.add('warn');
     els.alert.hidden = false;
-  } else if (lossPct <= -15 && r.cal === 1) {
+  } else if (lossPct <= -15 && !isCalibrated(r)) {
     els.alert.textContent = 'Reading is well above the strung tension. Check the racket and string, or calibrate this racket.';
     els.alert.classList.add('info');
     els.alert.hidden = false;
@@ -1036,7 +1112,7 @@ function renderRacketList() {
     }
     const tags = document.createElement('span');
     tags.className = 'rc-meta';
-    tags.textContent = `${r.strungDate ? `Strung ${agoText(r.strungDate)} · ` : ''}${r.cal !== 1 ? 'calibrated' : 'not calibrated'}`;
+    tags.textContent = `${r.strungDate ? `Strung ${agoText(r.strungDate)} · ` : ''}${calPoints(r).length > 1 ? `learned from ${calPoints(r).length} calibrations` : isCalibrated(r) ? 'calibrated' : 'not calibrated'}`;
     const edit = document.createElement('button');
     edit.type = 'button';
     edit.className = 'btn edit';
@@ -1453,9 +1529,7 @@ function openRacketDialog(r, isNew) {
   f.strung.value = toUnit(r.strungKg).toFixed(1);
   f.strungDate.value = r.strungDate || '';
   f.alertPct.value = r.alertPct;
-  $('calInfo').textContent = r.cal === 1
-    ? 'Not calibrated yet. Readings use the physics model only.'
-    : `Calibrated: model × ${r.cal.toFixed(3)}.`;
+  $('calInfo').textContent = calSummary(r);
   const look = r.look || {};
   renderColourwayOptions(look.colourway || 'model');
   const resolved = resolveLook(r);
@@ -1481,6 +1555,7 @@ racketDialog.addEventListener('close', () => {
     state.rackets.push(r);
   }
   const prevDate = r.strungDate, prevKg = r.strungKg;
+  const prevLength = r.lengthMm, prevWidth = r.widthMm;
   const geometryChanged = r.lengthMm !== +f.lengthMm.value || r.widthMm !== +f.widthMm.value || r.gaugeMm !== +f.gaugeMm.value;
   r.name = f.name.value.trim() || 'Racket';
   r.model = f.model.value;
@@ -1492,7 +1567,10 @@ racketDialog.addEventListener('close', () => {
   r.strungDate = f.strungDate.value;
   r.alertPct = +f.alertPct.value;
   r.look = formLook();
-  if (geometryChanged && editingId) r.cal = 1; // old calibration was for different geometry
+  // A different head size makes old calibrations meaningless. A new string
+  // gauge doesn't: the points are stored per gauge².
+  const headChanged = r.lengthMm !== prevLength || r.widthMm !== prevWidth;
+  if (headChanged && editingId) { r.cal = 1; r.calPoints = []; }
   const restrung = isNew || r.strungDate !== prevDate || Math.abs(r.strungKg - prevKg) > 0.05;
   if (restrung) recordStringing(r, r.strungDate, r.strungKg);
   // Strung today: the best moment to calibrate, so offer it.
@@ -1536,8 +1614,36 @@ function openCalDialog(fromPrompt) {
   $('calFreq').textContent = `${Math.round(lastFreq)} Hz`;
   calForm.elements.known.value = toUnit(r.strungKg).toFixed(1);
   calForm.elements.resetDate.checked = !fromPrompt || r.strungDate !== today();
+  renderCalPoints();
   calDialog.returnValue = '';
   calDialog.showModal();
+}
+
+// The calibrations this racket has learned from, each removable.
+function renderCalPoints() {
+  const r = activeRacket();
+  const list = $('calPoints');
+  list.innerHTML = '';
+  $('calLearned').textContent = calSummary(r);
+  for (const p of [...calPoints(r)].reverse()) {
+    const li = document.createElement('li');
+    const what = document.createElement('span');
+    what.textContent = `${fmt(p.kg)} ${state.unit} at ${Math.round(p.freq)} Hz · ${shortDate(dayStart(p.date))}`;
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'btn tiny';
+    del.textContent = '✕';
+    del.setAttribute('aria-label', 'Remove this calibration');
+    del.onclick = () => {
+      r.calPoints = calPoints(r).filter(x => x !== p);
+      saveState();
+      renderCalPoints();
+      renderAll();
+    };
+    li.append(what, del);
+    list.appendChild(li);
+  }
+  $('resetCal').hidden = !isCalibrated(r);
 }
 
 els.calibrate.onclick = () => openCalDialog(false);
@@ -1554,7 +1660,7 @@ calDialog.addEventListener('close', () => {
     return;
   }
   const knownKg = fromUnit(+calForm.elements.known.value);
-  r.cal = knownKg / uncalibratedTensionKg(lastFreq, r);
+  addCalPoint(r, lastFreq, knownKg);
   r.calPrompt = false;
   if (calForm.elements.resetDate.checked) {
     r.strungKg = knownKg;
@@ -1563,15 +1669,18 @@ calDialog.addEventListener('close', () => {
   }
   saveState();
   renderAll();
-  setStatus(`Calibrated. This racket now reads ${fmt(knownKg)} ${state.unit} at ${Math.round(lastFreq)} Hz.`);
+  const n = calPoints(r).length;
+  setStatus(`Calibrated. This racket now reads ${fmt(tensionKg(lastFreq, r))} ${state.unit} at ${Math.round(lastFreq)} Hz${n > 1 ? `, learned from ${n} calibrations` : ''}.`);
 });
 
 $('resetCal').onclick = () => {
-  activeRacket().cal = 1;
+  const r = activeRacket();
+  r.cal = 1;
+  r.calPoints = [];
   saveState();
   calDialog.close('reset');
   renderAll();
-  setStatus('Calibration reset to the physics model.');
+  setStatus('Calibration cleared. Readings use the general model again.');
 };
 
 /* ---------- Wiring ---------- */
