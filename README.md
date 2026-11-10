@@ -45,7 +45,7 @@ Inside the phone app, **Export backup** opens the share sheet (save to Drive, Fi
 ## Using it
 1. Tap the racket name at the top to pick or add a racket: its model, string, and the tension it was strung at. The 3D racket takes the model's head shape and stock colours, close to the maker's colourway but without logos or printed graphics. Under **Look** you can pick another colour scheme, set your own frame, accent and grip colours and finish, and choose your string colour.
 2. Press **Start listening**, then flick the centre of the strings 3 times. Each tap rings the 3D strings and sends a wave across the screen; when the taps agree, the racket turns to face you and the reading is confirmed, with a ± showing how closely the taps agreed.
-3. After a fresh restring, set the date strung to today. The app offers to calibrate on your next reading, which makes every later reading on that racket much more accurate.
+3. After a fresh restring, set the date strung to today. The app offers to calibrate on your next reading, which makes every later reading on that racket much more accurate. Each calibration is kept, and the app fits that racket's own curve from all of them: its level from the first one, and its slope once calibrations cover different tensions. The calibrate screen lists what it has learned from, and you can remove any calibration you don't trust.
 4. **Save reading** to track tension loss. Swipe up on the reading (or tap ☰) for history, the sound spectrum, settings and backups.
 5. Swipe left or right on the racket to switch rackets.
 
